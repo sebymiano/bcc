@@ -98,6 +98,16 @@ class BPFTableBase {
   size_t id; // table id inside bpf_module
 };
 
+class BPFTable : public BPFTableBase<void, void> {
+ public:
+  BPFTable(const TableDesc &desc, BPFModule *bpf_module);
+
+  StatusTuple get_value(const std::string &key_str, std::string &value);
+  StatusTuple update_value(const std::string &key_str, const std::string &value_str);
+  StatusTuple remove_value(const std::string &key_str);
+};
+
+
 template <class ValueType>
 class BPFArrayTable : public BPFTableBase<int, ValueType> {
 public:
