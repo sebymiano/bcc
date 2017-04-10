@@ -94,16 +94,16 @@ public:
   BPFArrayTable<ValueType> get_array_table(const std::string& name) {
     TableStorage::iterator it;
     if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
-      return BPFArrayTable<ValueType>(it->second);
-    return BPFArrayTable<ValueType>({});
+      return BPFArrayTable<ValueType>(it->second, bpf_module_.get());
+    return BPFArrayTable<ValueType>(TableDesc{}, nullptr);;
   }
 
   template <class KeyType, class ValueType>
   BPFHashTable<KeyType, ValueType> get_hash_table(const std::string& name) {
     TableStorage::iterator it;
     if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
-      return BPFHashTable<KeyType, ValueType>(it->second);
-    return BPFHashTable<KeyType, ValueType>({});
+      return BPFHashTable<KeyType, ValueType>(it->second, bpf_module_.get());
+    return BPFHashTable<KeyType, ValueType>(TableDesc{}, nullptr);
   }
 
   BPFProgTable get_prog_table(const std::string& name);

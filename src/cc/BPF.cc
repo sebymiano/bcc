@@ -404,7 +404,7 @@ StatusTuple BPF::open_perf_buffer(const std::string& name,
       return StatusTuple(-1,
                          "open_perf_buffer: unable to find table_storage %s",
                          name.c_str());
-    perf_buffers_[name] = new BPFPerfBuffer(it->second);
+    perf_buffers_[name] = new BPFPerfBuffer(it->second, bpf_module_.get());
   }
   if ((page_cnt & (page_cnt - 1)) != 0)
     return StatusTuple(-1, "open_perf_buffer page_cnt must be a power of two");
@@ -488,15 +488,15 @@ std::string BPF::get_kprobe_event(const std::string& kernel_func,
 BPFProgTable BPF::get_prog_table(const std::string& name) {
   TableStorage::iterator it;
   if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
-    return BPFProgTable(it->second);
-  return BPFProgTable({});
+    return BPFProgTable(it->second, bpf_module_.get());
+  return BPFProgTable(TableDesc{}, nullptr);
 }
 
 BPFStackTable BPF::get_stack_table(const std::string& name) {
   TableStorage::iterator it;
   if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
-    return BPFStackTable(it->second);
-  return BPFStackTable({});
+    return BPFStackTable(it->second, bpf_module_.get());
+  return BPFStackTable(TableDesc{}, nullptr);
 }
 
 std::string BPF::get_uprobe_event(const std::string& binary_path,
