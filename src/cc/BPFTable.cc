@@ -86,6 +86,21 @@ StatusTuple BPFTable::remove_value(const std::string& key_str) {
   return StatusTuple(0);
 }
 
+StatusTuple BPFTable::clear(void) {
+  char cur[desc.key_size] = {0};
+  char nxt[desc.key_size];
+
+  while (true) {
+    if (!next(cur, nxt))
+      break;
+    if (!remove(nxt))
+      break;
+    memcpy(nxt, cur, sizeof(cur));
+  }
+
+  return StatusTuple(0);
+}
+
 BPFStackTable::~BPFStackTable() {
   for (auto it : pid_sym_)
     bcc_free_symcache(it.second, it.first);

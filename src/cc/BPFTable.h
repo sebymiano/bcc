@@ -109,6 +109,7 @@ class BPFTable : public BPFTableBase<void, void> {
   StatusTuple update_value(const std::string& key_str,
                            const std::string& value_str);
   StatusTuple remove_value(const std::string& key_str);
+  StatusTuple clear(void);
 };
 
 template <class ValueType>
