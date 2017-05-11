@@ -34,6 +34,7 @@
 
 #include "bcc_exception.h"
 #include "codegen_llvm.h"
+#include "file_desc.h"
 #include "lexer.h"
 #include "libbpf.h"
 #include "linux/bpf.h"
@@ -1244,7 +1245,7 @@ StatusTuple CodegenLLVM::visit(Node *root, TableStorage &ts, const string &id) {
       map_type = BPF_MAP_TYPE_ARRAY;
     ts.Insert(Path({id, table.first->id_->name_}),
               {
-                  table.first->id_->name_, table_fds_[table.first], map_type,
+                  table.first->id_->name_, FileDesc(table_fds_[table.first]), map_type,
                   table.first->key_type_->bit_width_ >> 3, table.first->leaf_type_->bit_width_ >> 3,
                   table.first->size_, 0,
               });
