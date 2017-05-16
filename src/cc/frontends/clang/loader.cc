@@ -105,7 +105,8 @@ std::pair<bool, string> get_kernel_path_info(const string kdir)
 }
 
 int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts, const string &file,
-                       bool in_memory, const char *cflags[], int ncflags, const std::string &id) {
+                       bool in_memory, const char *cflags[], int ncflags, const std::string &id,
+                       const std::string &maps_ns) {
   using namespace clang;
 
   string main_path = "/virtual/main.c";
@@ -230,8 +231,8 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts, const st
   if (in_memory) {
     invocation0.getPreprocessorOpts().addRemappedFile(main_path, &*main_buf);
     invocation0.getFrontendOpts().Inputs.clear();
-    invocation0.getFrontendOpts().Inputs.push_back(
-        FrontendInputFile(main_path, IK_C));
+    invocation0.getFrontendOpts().Inputs.push_back(FrontendInputFile(
+        main_path, FrontendOptions::getInputKindForExtension("c")));
   }
   invocation0.getFrontendOpts().DisableFree = false;
 
@@ -260,8 +261,8 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts, const st
     invocation1.getPreprocessorOpts().addRemappedFile(f.first, &*f.second);
   invocation1.getPreprocessorOpts().addRemappedFile(main_path, &*out_buf);
   invocation1.getFrontendOpts().Inputs.clear();
-  invocation1.getFrontendOpts().Inputs.push_back(
-      FrontendInputFile(main_path, IK_C));
+  invocation1.getFrontendOpts().Inputs.push_back(FrontendInputFile(
+      main_path, FrontendOptions::getInputKindForExtension("c")));
   invocation1.getFrontendOpts().DisableFree = false;
 
   compiler1.createDiagnostics();
@@ -269,7 +270,7 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts, const st
   // capture the rewritten c file
   string out_str1;
   llvm::raw_string_ostream os1(out_str1);
-  BFrontendAction bact(os1, flags_, ts, id);
+  BFrontendAction bact(os1, flags_, ts, id, maps_ns);
   if (!compiler1.ExecuteAction(bact))
     return -1;
   unique_ptr<llvm::MemoryBuffer> out_buf1 = llvm::MemoryBuffer::getMemBuffer(out_str1);
@@ -286,8 +287,8 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts, const st
     invocation2.getPreprocessorOpts().addRemappedFile(f.first, &*f.second);
   invocation2.getPreprocessorOpts().addRemappedFile(main_path, &*out_buf1);
   invocation2.getFrontendOpts().Inputs.clear();
-  invocation2.getFrontendOpts().Inputs.push_back(
-      FrontendInputFile(main_path, IK_C));
+  invocation2.getFrontendOpts().Inputs.push_back(FrontendInputFile(
+      main_path, FrontendOptions::getInputKindForExtension("c")));
   invocation2.getFrontendOpts().DisableFree = false;
   // Resort to normal inlining. In -O0 the default is OnlyAlwaysInlining and
   // clang might add noinline attribute even for functions with inline hint.
