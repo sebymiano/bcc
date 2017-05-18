@@ -266,6 +266,29 @@ int bpf_prog_load(enum bpf_prog_type prog_type,
   return ret;
 }
 
+int bpf_prog_test_run(int prog_fd, int repeat, void *data, unsigned size,
+                      void *data_out, unsigned *size_out, unsigned *retval,
+                      unsigned *duration) {
+  union bpf_attr attr;
+  int ret;
+
+  memset(&attr, 0, sizeof(attr));
+  attr.test.prog_fd = prog_fd;
+  attr.test.data_in = ptr_to_u64(data);
+  attr.test.data_out = ptr_to_u64(data_out);
+  attr.test.data_size_in = size;
+  attr.test.repeat = repeat;
+
+  ret = syscall(__NR_bpf, BPF_PROG_TEST_RUN, &attr, sizeof(attr));
+  if (size_out)
+    *size_out = attr.test.data_size_out;
+  if (retval)
+    *retval = attr.test.retval;
+  if (duration)
+    *duration = attr.test.duration;
+  return ret;
+}
+
 int bpf_open_raw_sock(const char *name)
 {
   struct sockaddr_ll sll;

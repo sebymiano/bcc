@@ -129,6 +129,11 @@ public:
                         int& fd);
   StatusTuple unload_func(const std::string& func_name);
 
+  StatusTuple test_func(const std::string& func_name,
+                        int repeat, void *data, unsigned size,
+                        void *data_out, unsigned *size_out, unsigned *retval,
+                        unsigned *duration);
+
 private:
   std::string get_kprobe_event(const std::string& kernel_func,
                                bpf_probe_attach_type type);

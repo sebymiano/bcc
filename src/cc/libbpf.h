@@ -40,6 +40,11 @@ int bpf_prog_load(enum bpf_prog_type prog_type,
 		  const struct bpf_insn *insns, int insn_len,
 		  const char *license, unsigned kern_version,
 		  char *log_buf, unsigned log_buf_size);
+
+int bpf_prog_test_run(int prog_fd, int repeat, void *data, unsigned size,
+                      void *data_out, unsigned *size_out, unsigned *retval,
+                      unsigned *duration);
+
 int bpf_attach_socket(int sockfd, int progfd);
 
 /* create RAW socket and bind to interface 'name' */

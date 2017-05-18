@@ -466,6 +466,22 @@ StatusTuple BPF::unload_func(const std::string& func_name) {
   return StatusTuple(0);
 }
 
+StatusTuple BPF::test_func(const std::string& func_name,
+                           int repeat, void *data, unsigned size,
+                           void *data_out, unsigned *size_out, unsigned *retval,
+                           unsigned *duration) {
+  auto it = funcs_.find(func_name);
+  if (it == funcs_.end())
+    return StatusTuple(-1, "Function %s is not loaded", func_name.c_str());
+  int fd = it->second;
+  int ret;
+  ret = bpf_prog_test_run(fd, repeat, data, size, data_out, size_out, retval,
+                          duration);
+  if (ret < 0)
+    return StatusTuple(ret, std::strerror(errno));
+  return StatusTuple(0);
+}
+
 StatusTuple BPF::check_binary_symbol(const std::string& binary_path,
                                      const std::string& symbol,
                                      uint64_t symbol_addr, bcc_symbol* output) {
