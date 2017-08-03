@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "bcc_exception.h"
+#include "bcc_syms.h"
 #include "bpf_module.h"
 #include "libbpf.h"
 #include "perf_reader.h"
@@ -68,6 +69,11 @@ class BPFTableBase {
   bool lookup(KeyType* key, ValueType* value) {
     return bpf_lookup_elem(desc.fd, static_cast<void*>(key),
                            static_cast<void*>(value)) >= 0;
+  }
+
+  bool first(KeyType* key) {
+    return bpf_get_first_key(desc.fd, static_cast<void*>(key),
+                             desc.key_size) >= 0;
   }
 
   bool next(KeyType* key, KeyType* next_key) {
@@ -175,17 +181,18 @@ class BPFHashTable : public BPFTableBase<KeyType, ValueType> {
 
   std::vector<std::pair<KeyType, ValueType>> get_table_offline() {
     std::vector<std::pair<KeyType, ValueType>> res;
-
-    KeyType cur, nxt;
+    KeyType cur;
     ValueType value;
 
+    if (!this->first(&cur))
+      return res;
+
     while (true) {
-      if (!this->next(&cur, &nxt))
+      if (!this->lookup(&cur, &value))
         break;
-      if (!this->lookup(&nxt, &value))
+      res.emplace_back(cur, value);
+      if (!this->next(&cur, &cur))
         break;
-      res.emplace_back(nxt, value);
-      std::swap(cur, nxt);
     }
 
     return res;
@@ -200,14 +207,16 @@ struct stacktrace_t {
 
 class BPFStackTable : public BPFTableBase<int, stacktrace_t> {
  public:
-  BPFStackTable(const TableDesc& desc)
-      : BPFTableBase<int, stacktrace_t>(desc) {}
+  BPFStackTable(const TableDesc& desc,
+                bool use_debug_file,
+                bool check_debug_file_crc);
   ~BPFStackTable();
 
   std::vector<uintptr_t> get_stack_addr(int stack_id);
   std::vector<std::string> get_stack_symbol(int stack_id, int pid);
 
  private:
+  bcc_symbol_option symbol_option_;
   std::map<int, void*> pid_sym_;
 };
 
@@ -231,6 +240,22 @@ class BPFPerfBuffer : public BPFTableBase<int, int> {
 
   int epfd_;
   std::unique_ptr<epoll_event[]> ep_events_;
+};
+
+class BPFPerfEventArray : public BPFTableBase<int, int> {
+ public:
+  BPFPerfEventArray(const TableDesc& desc)
+      : BPFTableBase<int, int>(desc) {}
+  ~BPFPerfEventArray();
+
+  StatusTuple open_all_cpu(uint32_t type, uint64_t config);
+  StatusTuple close_all_cpu();
+
+ private:
+  StatusTuple open_on_cpu(int cpu, uint32_t type, uint64_t config);
+  StatusTuple close_on_cpu(int cpu);
+
+  std::map<int, int> cpu_fds_;
 };
 
 class BPFProgTable : public BPFTableBase<int, int> {

@@ -46,9 +46,10 @@ char *bcc_procutils_which(const char *binpath) {
     const size_t path_len = next - PATH;
 
     if (path_len) {
-      memcpy(buffer, PATH, path_len);
-      buffer[path_len] = '/';
-      strcpy(buffer + path_len + 1, binpath);
+      int ret = snprintf(buffer, sizeof(buffer), "%.*s/%s",
+	                  (int)path_len, PATH, binpath);
+      if (ret < 0 || ret >= sizeof(buffer))
+        return 0;
 
       if (bcc_elf_is_exe(buffer))
         return strdup(buffer);
@@ -60,14 +61,18 @@ char *bcc_procutils_which(const char *binpath) {
   return 0;
 }
 
+#define STARTS_WITH(mapname, prefix) (!strncmp(mapname, prefix, sizeof(prefix)-1))
+
 int bcc_mapping_is_file_backed(const char *mapname) {
-  return mapname[0] &&
-    strncmp(mapname, "//anon", sizeof("//anon") - 1) &&
-    strncmp(mapname, "/dev/zero", sizeof("/dev/zero") - 1) &&
-    strncmp(mapname, "/anon_hugepage", sizeof("/anon_hugepage") - 1) &&
-    strncmp(mapname, "[stack", sizeof("[stack") - 1) &&
-    strncmp(mapname, "/SYSV", sizeof("/SYSV") - 1) &&
-    strncmp(mapname, "[heap]", sizeof("[heap]") - 1);
+  return mapname[0] && !(
+    STARTS_WITH(mapname, "//anon") ||
+    STARTS_WITH(mapname, "/dev/zero") ||
+    STARTS_WITH(mapname, "/anon_hugepage") ||
+    STARTS_WITH(mapname, "[stack") ||
+    STARTS_WITH(mapname, "/SYSV") ||
+    STARTS_WITH(mapname, "[heap]") ||
+    STARTS_WITH(mapname, "[vsyscall]") ||
+    STARTS_WITH(mapname, "[vdso]"));
 }
 
 int bcc_procutils_each_module(int pid, bcc_procutils_modulecb callback,
@@ -76,7 +81,7 @@ int bcc_procutils_each_module(int pid, bcc_procutils_modulecb callback,
   FILE *procmap;
   int ret;
 
-  sprintf(procmap_filename, "/proc/%ld/maps", (long)pid);
+  snprintf(procmap_filename, sizeof(procmap_filename), "/proc/%ld/maps", (long)pid);
   procmap = fopen(procmap_filename, "r");
 
   if (!procmap)
@@ -322,7 +327,7 @@ static bool which_so_in_process(const char* libname, int pid, char* libpath) {
   char search1[search_len + 1];
   char search2[search_len + 1];
 
-  sprintf(mappings_file, "/proc/%ld/maps", (long)pid);
+  snprintf(mappings_file, sizeof(mappings_file), "/proc/%ld/maps", (long)pid);
   FILE *fp = fopen(mappings_file, "r");
   if (!fp)
     return NULL;
@@ -395,12 +400,12 @@ const char *language_c = "c";
 const int nb_languages = 5;
 
 const char *bcc_procutils_language(int pid) {
-  char procfilename[22], line[4096], pathname[32], *str;
+  char procfilename[24], line[4096], pathname[32], *str;
   FILE *procfile;
   int i, ret;
 
   /* Look for clues in the absolute path to the executable. */
-  sprintf(procfilename, "/proc/%ld/exe", (long)pid);
+  snprintf(procfilename, sizeof(procfilename), "/proc/%ld/exe", (long)pid);
   if (realpath(procfilename, line)) {
     for (i = 0; i < nb_languages; i++)
       if (strstr(line, languages[i]))
@@ -408,7 +413,7 @@ const char *bcc_procutils_language(int pid) {
   }
 
 
-  sprintf(procfilename, "/proc/%ld/maps", (long)pid);
+  snprintf(procfilename, sizeof(procfilename), "/proc/%ld/maps", (long)pid);
   procfile = fopen(procfilename, "r");
   if (!procfile)
     return NULL;
@@ -429,7 +434,7 @@ const char *bcc_procutils_language(int pid) {
         newline[0] = '\0';
       while (isspace(mapname[0])) mapname++;
       for (i = 0; i < nb_languages; i++) {
-        sprintf(pathname, "/lib%s", languages[i]);
+        snprintf(pathname, sizeof(pathname), "/lib%s", languages[i]);
         if (strstr(mapname, pathname))
           return languages[i];
         if ((str = strstr(mapname, "libc")) &&

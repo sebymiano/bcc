@@ -57,7 +57,7 @@ __attribute__((section("maps/" _table_type))) \
 struct _name##_table_t _name = { .flags = (_flags) }
 
 #define BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries) \
-BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, 0);
+BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, 0)
 
 // define a table same as above but allow it to be referenced by other modules
 #define BPF_TABLE_PUBLIC(_table_type, _key_type, _leaf_type, _name, _max_entries) \
@@ -70,6 +70,17 @@ struct _name##_table_t __##_name
 BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries); \
 __attribute__((section("maps/shared"))) \
 struct _name##_table_t __##_name
+
+// Identifier for current CPU used in perf_submit and perf_read
+// Prefer BPF_F_CURRENT_CPU flag, falls back to call helper for older kernel
+// Can be overridden from BCC
+#ifndef CUR_CPU_IDENTIFIER
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+#define CUR_CPU_IDENTIFIER BPF_F_CURRENT_CPU
+#else
+#define CUR_CPU_IDENTIFIER bpf_get_smp_processor_id()
+#endif
+#endif
 
 // Table for pushing custom events to userspace via ring buffer
 #define BPF_PERF_OUTPUT(_name) \
@@ -127,6 +138,23 @@ struct _name##_table_t _name
 // BPF_ARRAY(name, leaf_type=u64, size=10240)
 #define BPF_ARRAY(...) \
   BPF_ARRAYX(__VA_ARGS__, BPF_ARRAY3, BPF_ARRAY2, BPF_ARRAY1)(__VA_ARGS__)
+
+#define BPF_PERCPU_ARRAY1(_name)                        \
+    BPF_TABLE("percpu_array", int, u64, _name, 10240)
+#define BPF_PERCPU_ARRAY2(_name, _leaf_type) \
+    BPF_TABLE("percpu_array", int, _leaf_type, _name, 10240)
+#define BPF_PERCPU_ARRAY3(_name, _leaf_type, _size) \
+    BPF_TABLE("percpu_array", int, _leaf_type, _name, _size)
+
+// helper for default-variable macro function
+#define BPF_PERCPU_ARRAYX(_1, _2, _3, NAME, ...) NAME
+
+// Define an array function (per CPU), some arguments optional
+// BPF_PERCPU_ARRAY(name, leaf_type=u64, size=10240)
+#define BPF_PERCPU_ARRAY(...)                                           \
+  BPF_PERCPU_ARRAYX(                                                    \
+    __VA_ARGS__, BPF_PERCPU_ARRAY3, BPF_PERCPU_ARRAY2, BPF_PERCPU_ARRAY1) \
+           (__VA_ARGS__)
 
 #define BPF_HIST1(_name) \
   BPF_TABLE("histogram", int, u64, _name, 64)
@@ -198,7 +226,7 @@ static int (*bpf_skb_get_tunnel_key)(void *ctx, void *to, u32 size, u64 flags) =
   (void *) BPF_FUNC_skb_get_tunnel_key;
 static int (*bpf_skb_set_tunnel_key)(void *ctx, void *from, u32 size, u64 flags) =
   (void *) BPF_FUNC_skb_set_tunnel_key;
-static int (*bpf_perf_event_read)(void *map, u32 index) =
+static u64 (*bpf_perf_event_read)(void *map, u64 flags) =
   (void *) BPF_FUNC_perf_event_read;
 static int (*bpf_redirect)(int ifindex, u32 flags) =
   (void *) BPF_FUNC_redirect;

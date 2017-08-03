@@ -84,13 +84,17 @@ int count(struct pt_regs *ctx) {
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
         # Need to find path to libz.so.1
-        libz_path = None 
+        libz_path = None
         p = subprocess.Popen(["ldconfig", "-p"], stdout=subprocess.PIPE)
         for l in p.stdout:
             n = l.split()
-            if n[0] == "libz.so.1":
-                libz_path = n[-1]
+            if n[0] == b"libz.so.1":
+                # if libz was already found, override only if new lib is more
+                # specific (e.g. libc6,x86-64 vs libc6)
+                if not libz_path or len(n[1].split(b",")) > 1:
+                    libz_path = n[-1]
         p.wait()
+        p.stdout.close()
         p = None
 
         self.assertIsNotNone(libz_path)
@@ -102,24 +106,24 @@ int count(struct pt_regs *ctx) {
             if libc.unshare(0x00020000) == -1:
                 e = ctypes.get_errno()
                 raise OSError(e, errno.errorcode[e])
-        
+
             # Remount root MS_REC|MS_PRIVATE
-            if libc.mount(None, "/", None, (1<<14)|(1<<18) , None) == -1:
+            if libc.mount(None, b"/", None, (1<<14)|(1<<18) , None) == -1:
                 e = ctypes.get_errno()
                 raise OSError(e, errno.errorcode[e])
 
-            if libc.mount("tmpfs", "/tmp", "tmpfs", 0, None) == -1:
+            if libc.mount(b"tmpfs", b"/tmp", b"tmpfs", 0, None) == -1:
                 e = ctypes.get_errno()
                 raise OSError(e, errno.errorcode[e])
 
-            shutil.copy(libz_path, "/tmp")
+            shutil.copy(libz_path, b"/tmp")
 
             libz = ctypes.CDLL("/tmp/libz.so.1")
             time.sleep(1)
             libz.zlibVersion()
             time.sleep(5)
             os._exit(0)
-            
+
         libname = "/tmp/libz.so.1"
         symname = "zlibVersion"
         text = text.replace("PID", "%d" % child_pid)
@@ -131,6 +135,6 @@ int count(struct pt_regs *ctx) {
         b.detach_uretprobe(name=libname, sym=symname, pid=child_pid)
         b.detach_uprobe(name=libname, sym=symname, pid=child_pid)
         os.wait()
- 
+
 if __name__ == "__main__":
     unittest.main()

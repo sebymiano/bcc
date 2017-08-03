@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cctype>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -116,7 +117,15 @@ public:
 
   BPFProgTable get_prog_table(const std::string& name);
 
-  BPFStackTable get_stack_table(const std::string& name);
+  BPFStackTable get_stack_table(const std::string& name,
+                                bool use_debug_file = true,
+                                bool check_debug_file_crc = true);
+
+  StatusTuple open_perf_event(const std::string& name,
+                              uint32_t type,
+                              uint64_t config);
+
+  StatusTuple close_perf_event(const std::string& name);
 
   StatusTuple open_perf_buffer(const std::string& name,
                                perf_reader_raw_cb cb,
@@ -172,7 +181,9 @@ private:
 
   StatusTuple check_binary_symbol(const std::string& binary_path,
                                   const std::string& symbol,
-                                  uint64_t symbol_addr, bcc_symbol* output);
+                                  uint64_t symbol_addr,
+                                  std::string &module_res,
+                                  uint64_t &offset_res);
 
   std::unique_ptr<BPFModule> bpf_module_;
 
@@ -184,6 +195,7 @@ private:
   std::map<std::string, open_probe_t> uprobes_;
   std::map<std::string, open_probe_t> tracepoints_;
   std::map<std::string, BPFPerfBuffer*> perf_buffers_;
+  std::map<std::string, BPFPerfEventArray*> perf_event_arrays_;
   std::map<std::pair<uint32_t, uint32_t>, open_probe_t> perf_events_;
 };
 

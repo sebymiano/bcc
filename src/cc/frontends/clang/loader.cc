@@ -134,7 +134,10 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts, const st
 
   // -fno-color-diagnostics: this is a workaround for a bug in llvm terminalHasColors() as of
   // 22 Jul 2016. Also see bcc #615.
-  vector<const char *> flags_cstr({"-O0", "-emit-llvm", "-I", dstack.cwd(),
+  // Enable -O2 for clang. In clang 5.0, -O0 may result in funciton marking as
+  // noinline and optnone (if not always inlining).
+  // Note that first argument is ignored in clang compilation invocation.
+  vector<const char *> flags_cstr({"-O0", "-O2", "-emit-llvm", "-I", dstack.cwd(),
                                    "-Wno-deprecated-declarations",
                                    "-Wno-gnu-variable-sized-type-not-at-end",
                                    "-Wno-pragma-once-outside-header",
@@ -161,6 +164,10 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts, const st
     for (auto i = 0; i < ncflags; ++i)
       flags_cstr.push_back(cflags[i]);
   }
+#ifdef CUR_CPU_IDENTIFIER
+  string cur_cpu_flag = string("-DCUR_CPU_IDENTIFIER=") + CUR_CPU_IDENTIFIER;
+  flags_cstr.push_back(cur_cpu_flag.c_str());
+#endif
 
   // set up the error reporting class
   IntrusiveRefCntPtr<DiagnosticOptions> diag_opts(new DiagnosticOptions());
@@ -290,6 +297,7 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts, const st
   invocation2.getFrontendOpts().Inputs.push_back(FrontendInputFile(
       main_path, FrontendOptions::getInputKindForExtension("c")));
   invocation2.getFrontendOpts().DisableFree = false;
+  invocation2.getCodeGenOpts().DisableFree = false;
   // Resort to normal inlining. In -O0 the default is OnlyAlwaysInlining and
   // clang might add noinline attribute even for functions with inline hint.
   invocation2.getCodeGenOpts().setInlining(CodeGenOptions::NormalInlining);

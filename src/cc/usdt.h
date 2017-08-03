@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ns_guard.h"
 #include "syms.h"
 #include "vendor/optional.hpp"
 
@@ -33,6 +34,9 @@ class ArgumentParser;
 
 static const std::string USDT_PROGRAM_HEADER =
     "#include <uapi/linux/ptrace.h>\n";
+
+static const std::string COMPILER_BARRIER =
+    "__asm__ __volatile__(\"\": : :\"memory\");";
 
 class Argument {
 private:
@@ -149,6 +153,7 @@ class Probe {
   std::vector<Location> locations_;
 
   optional<int> pid_;
+  ProcMountNS *mount_ns_;
   optional<bool> in_shared_object_;
 
   optional<std::string> attached_to_;
@@ -163,7 +168,7 @@ class Probe {
 
 public:
   Probe(const char *bin_path, const char *provider, const char *name,
-        uint64_t semaphore, const optional<int> &pid);
+        uint64_t semaphore, const optional<int> &pid, ProcMountNS *ns);
 
   size_t num_locations() const { return locations_.size(); }
   size_t num_arguments() const { return locations_.front().arguments_.size(); }
@@ -195,6 +200,8 @@ class Context {
 
   optional<int> pid_;
   optional<ProcStat> pid_stat_;
+  std::unique_ptr<ProcMountNS> mount_ns_instance_;
+  std::string cmd_bin_path_;
   bool loaded_;
 
   static void _each_probe(const char *binpath, const struct bcc_elf_usdt *probe,
@@ -212,12 +219,13 @@ public:
   optional<int> pid() const { return pid_; }
   bool loaded() const { return loaded_; }
   size_t num_probes() const { return probes_.size(); }
+  const std::string & cmd_bin_path() const { return cmd_bin_path_; }
+  ino_t inode() const { return mount_ns_instance_->target_ino(); }
 
   Probe *get(const std::string &probe_name);
   Probe *get(int pos) { return probes_[pos].get(); }
 
   bool enable_probe(const std::string &probe_name, const std::string &fn_name);
-  bool generate_usdt_args(std::ostream &stream);
 
   typedef void (*each_cb)(struct bcc_usdt *);
   void each(each_cb callback);
