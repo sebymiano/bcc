@@ -102,6 +102,7 @@ class BPFTable : public BPFTableBase<void, void> {
                            const std::string& value_str);
   StatusTuple remove_value(const std::string& key_str);
   StatusTuple clear(void);
+  StatusTuple get_table_offline(std::vector<std::pair<std::string, std::string>> &res);
 };
 
 template <class ValueType>

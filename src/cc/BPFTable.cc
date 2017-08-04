@@ -105,6 +105,36 @@ StatusTuple BPFTable::clear(void) {
   return StatusTuple(0);
 }
 
+StatusTuple BPFTable::get_table_offline(
+  std::vector<std::pair<std::string, std::string>> &res) {
+  StatusTuple r(0);
+  char key[desc.key_size] = {0};
+  char value[desc.leaf_size] = {0};
+
+  std::string key_str;
+  std::string value_str;
+
+  if (!this->first(&key))
+    return StatusTuple(0);
+
+  while (true) {
+    if (!this->lookup(&key, &value))
+      break;
+    r = key_to_string(key, key_str);
+    if (r.code() != 0)
+      return r;
+
+    r = leaf_to_string(value, value_str);
+    if (r.code() != 0)
+      return r;
+    res.emplace_back(key_str, value_str);
+    if (!this->next(&key, &key))
+      break;
+  }
+
+  return StatusTuple(0);
+}
+
 BPFStackTable::BPFStackTable(const TableDesc& desc,
                              bool use_debug_file,
                              bool check_debug_file_crc)
