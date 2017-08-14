@@ -98,11 +98,12 @@ class MyMemoryManager : public SectionMemoryManager {
   map<string, tuple<uint8_t *, uintptr_t>> *sections_;
 };
 
-BPFModule::BPFModule(unsigned flags, TableStorage *ts, const std::string &maps_ns)
+BPFModule::BPFModule(unsigned flags, TableStorage *ts, const std::string &maps_ns, const std::string &other_id)
     : flags_(flags),
       ctx_(new LLVMContext),
       id_(std::to_string((uintptr_t)this)),
       maps_ns_(maps_ns),
+      other_id_(other_id),
       ts_(ts) {
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
@@ -458,7 +459,7 @@ unique_ptr<ExecutionEngine> BPFModule::finalize_rw(unique_ptr<Module> m) {
 // load an entire c file as a module
 int BPFModule::load_cfile(const string &file, bool in_memory, const char *cflags[], int ncflags) {
   clang_loader_ = ebpf::make_unique<ClangLoader>(&*ctx_, flags_);
-  if (clang_loader_->parse(&mod_, *ts_, file, in_memory, cflags, ncflags, id_, maps_ns_))
+  if (clang_loader_->parse(&mod_, *ts_, file, in_memory, cflags, ncflags, id_, maps_ns_, other_id_))
     return -1;
   return 0;
 }
@@ -470,7 +471,7 @@ int BPFModule::load_cfile(const string &file, bool in_memory, const char *cflags
 // build an ExecutionEngine.
 int BPFModule::load_includes(const string &text) {
   clang_loader_ = ebpf::make_unique<ClangLoader>(&*ctx_, flags_);
-  if (clang_loader_->parse(&mod_, *ts_, text, true, nullptr, 0, "", ""))
+  if (clang_loader_->parse(&mod_, *ts_, text, true, nullptr, 0, "", "", ""))
     return -1;
   return 0;
 }
@@ -839,7 +840,7 @@ int BPFModule::load_b(const string &filename, const string &proto_filename) {
     return rc;
 
   b_loader_.reset(new BLoader(flags_));
-  if (int rc = b_loader_->parse(&*mod_, filename, proto_filename, *ts_, id_, maps_ns_))
+  if (int rc = b_loader_->parse(&*mod_, filename, proto_filename, *ts_, id_, maps_ns_, other_id_))
     return rc;
   if (int rc = annotate())
     return rc;

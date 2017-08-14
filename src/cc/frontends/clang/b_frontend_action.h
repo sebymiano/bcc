@@ -123,8 +123,8 @@ class BFrontendAction : public clang::ASTFrontendAction {
   // Initialize with the output stream where the new source file contents
   // should be written.
   BFrontendAction(llvm::raw_ostream &os, unsigned flags, TableStorage &ts,
-                  const std::string &id, const std::string &maps_ns);
-
+                  const std::string &id, const std::string &maps_ns,
+                  const std::string &other_id);
   // Called by clang when the AST has been completed, here the output stream
   // will be flushed.
   void EndSourceFileAction() override;
@@ -136,12 +136,14 @@ class BFrontendAction : public clang::ASTFrontendAction {
   TableStorage &table_storage() const { return ts_; }
   std::string id() const { return id_; }
   std::string maps_ns() const { return maps_ns_; }
+  std::string other_id() const { return other_id_; }
  private:
   llvm::raw_ostream &os_;
   unsigned flags_;
   TableStorage &ts_;
   std::string id_;
   std::string maps_ns_;
+  std::string other_id_;
   std::unique_ptr<clang::Rewriter> rewriter_;
 };
 
