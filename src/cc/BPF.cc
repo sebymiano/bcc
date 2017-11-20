@@ -541,6 +541,13 @@ BPFProgTable BPF::get_prog_table(const std::string& name) {
   return BPFProgTable({});
 }
 
+BPFDevmapTable BPF::get_devmap_table(const std::string& name) {
+  TableStorage::iterator it;
+  if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+    return BPFDevmapTable(it->second);
+  return BPFDevmapTable({});
+}
+
 BPFStackTable BPF::get_stack_table(const std::string& name,
                                    bool use_debug_file,
                                    bool check_debug_file_crc) {

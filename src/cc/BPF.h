@@ -116,6 +116,8 @@ public:
   }
 
   BPFProgTable get_prog_table(const std::string& name);
+  
+  BPFDevmapTable get_devmap_table(const std::string& name);
 
   BPFStackTable get_stack_table(const std::string& name,
                                 bool use_debug_file = true,
