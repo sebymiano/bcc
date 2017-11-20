@@ -663,6 +663,8 @@ bool BTypeVisitor::VisitVarDecl(VarDecl *Decl) {
       map_type = BPF_MAP_TYPE_LRU_PERCPU_HASH;
     } else if (A->getName() == "maps/lpm_trie") {
       map_type = BPF_MAP_TYPE_LPM_TRIE;
+    } else if (A->getName() == "maps/devmap") {
+      map_type = BPF_MAP_TYPE_DEVMAP;
     } else if (A->getName() == "maps/histogram") {
       map_type = BPF_MAP_TYPE_HASH;
       if (key_type->isSpecificBuiltinType(BuiltinType::Int))
