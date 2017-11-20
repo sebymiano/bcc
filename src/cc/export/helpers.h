@@ -230,6 +230,8 @@ static u64 (*bpf_perf_event_read)(void *map, u64 flags) =
   (void *) BPF_FUNC_perf_event_read;
 static int (*bpf_redirect)(int ifindex, u32 flags) =
   (void *) BPF_FUNC_redirect;
+static int (*bpf_redirect_map)(void *map, int key, int flags) =
+	(void *) BPF_FUNC_redirect_map;
 static u32 (*bpf_get_route_realm)(void *ctx) =
   (void *) BPF_FUNC_get_route_realm;
 static int (*bpf_perf_event_output)(void *ctx, void *map, u64 index, void *data, u32 size) =
