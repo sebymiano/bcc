@@ -52,6 +52,10 @@ See [INSTALL.md](INSTALL.md) for installation steps on your platform.
 
 See [FAQ.txt](FAQ.txt) for the most common troubleshoot questions.
 
+## Reference guide
+
+See [docs/reference_guide.md](docs/reference_guide.md) for the reference guide to the bcc and bcc/BPF APIs.
+
 ## Contents
 
 Some of these are single files that contain both C and Python, others have a
@@ -113,6 +117,8 @@ pair of .c and .py files, and some are directories of files.
 - tools/[mdflush](tools/mdflush.py): Trace md flush events. [Examples](tools/mdflush_example.txt).
 - tools/[mysqld_qslower](tools/mysqld_qslower.py): Trace MySQL server queries slower than a threshold. [Examples](tools/mysqld_qslower_example.txt).
 - tools/[memleak](tools/memleak.py): Display outstanding memory allocations to find memory leaks. [Examples](tools/memleak_example.txt).
+- tools/[nfsslower](tools/nfsslower.py): Trace slow NFS operations. [Examples](tools/nfsslower_example.txt).
+- tools/[nfsdist](tools/nfsdist.py): Summarize NFS operation latency distribution as a histogram. [Examples](tools/nfsdist_example.txt).
 - tools/[offcputime](tools/offcputime.py): Summarize off-CPU time by kernel stack trace. [Examples](tools/offcputime_example.txt).
 - tools/[offwaketime](tools/offwaketime.py): Summarize blocked time by kernel off-CPU stack and waker stack. [Examples](tools/offwaketime_example.txt).
 - tools/[oomkill](tools/oomkill.py): Trace the out-of-memory (OOM) killer. [Examples](tools/oomkill_example.txt).
@@ -203,7 +209,6 @@ to add support for the language of your choice and send a pull request!
 
 - [docs/tutorial.md](docs/tutorial.md): Using bcc tools to solve performance, troubleshooting, and networking issues.
 - [docs/tutorial_bcc_python_developer.md](docs/tutorial_bcc_python_developer.md): Developing new bcc programs using the Python interface.
-- [docs/reference_guide.md](docs/reference_guide.md): Reference guide to the bcc and bcc/BPF APIs.
 
 ### Networking
 

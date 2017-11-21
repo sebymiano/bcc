@@ -50,11 +50,11 @@ struct _name##_table_t { \
   void (*call) (void *, int index); \
   void (*increment) (_key_type); \
   int (*get_stackid) (void *, u64); \
-  _leaf_type data[_max_entries]; \
+  u32 max_entries; \
   int flags; \
 }; \
 __attribute__((section("maps/" _table_type))) \
-struct _name##_table_t _name = { .flags = (_flags) }
+struct _name##_table_t _name = { .flags = (_flags), .max_entries = (_max_entries) }
 
 #define BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries) \
 BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, 0)
@@ -90,10 +90,10 @@ struct _name##_table_t { \
   /* map.perf_submit(ctx, data, data_size) */ \
   int (*perf_submit) (void *, void *, u32); \
   int (*perf_submit_skb) (void *, u32, void *, u32); \
-  u32 data[0]; \
+  u32 max_entries; \
 }; \
 __attribute__((section("maps/perf_output"))) \
-struct _name##_table_t _name
+struct _name##_table_t _name = { .max_entries = 0 }
 
 // Table for reading hw perf cpu counters
 #define BPF_PERF_ARRAY(_name, _max_entries) \
@@ -102,10 +102,10 @@ struct _name##_table_t { \
   u32 leaf; \
   /* counter = map.perf_read(index) */ \
   u64 (*perf_read) (int); \
-  u32 data[_max_entries]; \
+  u32 max_entries; \
 }; \
 __attribute__((section("maps/perf_array"))) \
-struct _name##_table_t _name
+struct _name##_table_t _name = { .max_entries = (_max_entries) }
 
 #define BPF_HASH1(_name) \
   BPF_TABLE("hash", u64, u64, _name, 10240)
@@ -169,6 +169,21 @@ struct _name##_table_t _name
 #define BPF_HISTOGRAM(...) \
   BPF_HISTX(__VA_ARGS__, BPF_HIST3, BPF_HIST2, BPF_HIST1)(__VA_ARGS__)
 
+#define BPF_LPM_TRIE1(_name) \
+  BPF_F_TABLE("lpm_trie", u64, u64, _name, 10240, BPF_F_NO_PREALLOC)
+#define BPF_LPM_TRIE2(_name, _key_type) \
+  BPF_F_TABLE("lpm_trie", _key_type, u64, _name, 10240, BPF_F_NO_PREALLOC)
+#define BPF_LPM_TRIE3(_name, _key_type, _leaf_type) \
+  BPF_F_TABLE("lpm_trie", _key_type, _leaf_type, _name, 10240, BPF_F_NO_PREALLOC)
+#define BPF_LPM_TRIE4(_name, _key_type, _leaf_type, _size) \
+  BPF_F_TABLE("lpm_trie", _key_type, _leaf_type, _name, _size, BPF_F_NO_PREALLOC)
+#define BPF_LPM_TRIEX(_1, _2, _3, _4, NAME, ...) NAME
+
+// Define a LPM trie function, some arguments optional
+// BPF_LPM_TRIE(name, key_type=u64, leaf_type=u64, size=10240)
+#define BPF_LPM_TRIE(...) \
+  BPF_LPM_TRIEX(__VA_ARGS__, BPF_LPM_TRIE4, BPF_LPM_TRIE3, BPF_LPM_TRIE2, BPF_LPM_TRIE1)(__VA_ARGS__)
+
 struct bpf_stacktrace {
   u64 ip[BPF_MAX_STACK_DEPTH];
 };
@@ -191,7 +206,7 @@ static int (*bpf_map_update_elem)(void *map, void *key, void *value, u64 flags) 
   (void *) BPF_FUNC_map_update_elem;
 static int (*bpf_map_delete_elem)(void *map, void *key) =
   (void *) BPF_FUNC_map_delete_elem;
-static int (*bpf_probe_read)(void *dst, u64 size, void *unsafe_ptr) =
+static int (*bpf_probe_read)(void *dst, u64 size, const void *unsafe_ptr) =
   (void *) BPF_FUNC_probe_read;
 static u64 (*bpf_ktime_get_ns)(void) =
   (void *) BPF_FUNC_ktime_get_ns;
@@ -199,7 +214,7 @@ static u32 (*bpf_get_prandom_u32)(void) =
   (void *) BPF_FUNC_get_prandom_u32;
 static int (*bpf_trace_printk_)(const char *fmt, u64 fmt_size, ...) =
   (void *) BPF_FUNC_trace_printk;
-static int (*bpf_probe_read_str)(void *dst, u64 size, void *unsafe_ptr) =
+static int (*bpf_probe_read_str)(void *dst, u64 size, const void *unsafe_ptr) =
   (void *) BPF_FUNC_probe_read_str;
 int bpf_trace_printk(const char *fmt, ...) asm("llvm.bpf.extra");
 static inline __attribute__((always_inline))
@@ -237,7 +252,7 @@ static int (*bpf_perf_event_output)(void *ctx, void *map, u64 index, void *data,
 static int (*bpf_skb_load_bytes)(void *ctx, int offset, void *to, u32 len) =
   (void *) BPF_FUNC_skb_load_bytes;
 
-/* bpf_get_stackid will return a negative value in the case of an error
+/* bcc_get_stackid will return a negative value in the case of an error
  *
  * BPF_STACK_TRACE(_name, _size) will allocate space for _size stack traces.
  *  -ENOMEM will be returned when this limit is reached.
@@ -248,11 +263,11 @@ static int (*bpf_skb_load_bytes)(void *ctx, int offset, void *to, u32 len) =
  * kernel context. Given this you can typically ignore -EFAULT errors when
  * retrieving user-space stack traces.
  */
-static int (*bpf_get_stackid_)(void *ctx, void *map, u64 flags) =
+static int (*bcc_get_stackid_)(void *ctx, void *map, u64 flags) =
   (void *) BPF_FUNC_get_stackid;
 static inline __attribute__((always_inline))
-int bpf_get_stackid(uintptr_t map, void *ctx, u64 flags) {
-  return bpf_get_stackid_(ctx, (void *)map, flags);
+int bcc_get_stackid(uintptr_t map, void *ctx, u64 flags) {
+  return bcc_get_stackid_(ctx, (void *)map, flags);
 }
 
 static int (*bpf_csum_diff)(void *from, u64 from_size, void *to, u64 to_size, u64 seed) =
@@ -538,7 +553,7 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #define PT_REGS_PARM6(ctx)	((ctx)->gpr[8])
 #define PT_REGS_RC(ctx)		((ctx)->gpr[3])
 #define PT_REGS_IP(ctx)		((ctx)->nip)
-#define PT_REGS_SP(ctx)		((ctx)->sp)
+#define PT_REGS_SP(ctx)		((ctx)->gpr[1])
 #elif defined(__s390x__)
 #define PT_REGS_PARM1(x) ((x)->gprs[2])
 #define PT_REGS_PARM2(x) ((x)->gprs[3])
@@ -557,6 +572,7 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #define PT_REGS_PARM4(ctx)	((ctx)->cx)
 #define PT_REGS_PARM5(ctx)	((ctx)->r8)
 #define PT_REGS_PARM6(ctx)	((ctx)->r9)
+#define PT_REGS_FP(ctx)         ((ctx)->bp) /* Works only with CONFIG_FRAME_POINTER */
 #define PT_REGS_RC(ctx)		((ctx)->ax)
 #define PT_REGS_IP(ctx)		((ctx)->ip)
 #define PT_REGS_SP(ctx)		((ctx)->sp)
