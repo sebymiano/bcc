@@ -45,8 +45,9 @@ class BPF {
 public:
   static const int BPF_MAX_STACK_DEPTH = 127;
 
-  explicit BPF(unsigned int flag = 0, TableStorage* ts = nullptr)
-      : flag_(flag), bpf_module_(new BPFModule(flag, ts)) {}
+  explicit BPF(unsigned int flag = 0, TableStorage* ts = nullptr,
+               const std::string &maps_ns = "", const ebpf::BPF *other = nullptr)
+      : bpf_module_(new BPFModule(flag, ts, maps_ns, other == nullptr ? "" : other->bpf_module_->id())) {}
   StatusTuple init(const std::string& bpf_program,
                    const std::vector<std::string>& cflags = {},
                    const std::vector<USDT>& usdt = {});
@@ -72,8 +73,7 @@ public:
   StatusTuple detach_uprobe(
       const std::string& binary_path, const std::string& symbol,
       uint64_t symbol_addr = 0,
-      bpf_probe_attach_type attach_type = BPF_PROBE_ENTRY,
-      pid_t pid = -1);
+      bpf_probe_attach_type attach_type = BPF_PROBE_ENTRY);
   StatusTuple attach_usdt(const USDT& usdt, pid_t pid = -1, int cpu = 0,
                           int group_fd = -1);
   StatusTuple detach_usdt(const USDT& usdt);
@@ -143,7 +143,7 @@ private:
   std::string get_kprobe_event(const std::string& kernel_func,
                                bpf_probe_attach_type type);
   std::string get_uprobe_event(const std::string& binary_path, uint64_t offset,
-                               bpf_probe_attach_type type, pid_t pid);
+                               bpf_probe_attach_type type);
 
   StatusTuple detach_kprobe_event(const std::string& event, open_probe_t& attr);
   StatusTuple detach_uprobe_event(const std::string& event, open_probe_t& attr);
@@ -184,8 +184,6 @@ private:
                                   uint64_t symbol_addr,
                                   std::string &module_res,
                                   uint64_t &offset_res);
-
-  int flag_;
 
   std::unique_ptr<BPFModule> bpf_module_;
 
