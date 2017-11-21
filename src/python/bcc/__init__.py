@@ -39,10 +39,18 @@ def _get_num_open_probes():
 
 TRACEFS = "/sys/kernel/debug/tracing"
 
+# Debug flags
+
+# Debug output compiled LLVM IR.
 DEBUG_LLVM_IR = 0x1
+# Debug output loaded BPF bytecode and register state on branches.
 DEBUG_BPF = 0x2
+# Debug output pre-processor result.
 DEBUG_PREPROCESSOR = 0x4
-LOG_BUFFER_SIZE = 65536
+# Debug output ASM instructions embedded with source.
+DEBUG_SOURCE = 0x8
+#Debug output register state on all instructions in addition to DEBUG_BPF.
+DEBUG_BPF_REGISTER_STATE = 0x10
 
 class SymbolCache(object):
     def __init__(self, pid):
@@ -248,9 +256,7 @@ class BPF(object):
             hdr_file (Optional[str]): Path to a helper header file for the `src_file`
             text (Optional[str]): Contents of a source file for the module
             debug (Optional[int]): Flags used for debug prints, can be |'d together
-                DEBUG_LLVM_IR: print LLVM IR to stderr
-                DEBUG_BPF: print BPF bytecode to stderr
-                DEBUG_PREPROCESSOR: print Preprocessed C file to stderr
+                                   See "Debug flags" for explanation
         """
 
         self.open_kprobes = {}
@@ -319,22 +325,18 @@ class BPF(object):
             return self.funcs[func_name]
         if not lib.bpf_function_start(self.module, func_name.encode("ascii")):
             raise Exception("Unknown program %s" % func_name)
-        buffer_len = LOG_BUFFER_SIZE
-        while True:
-            log_buf = ct.create_string_buffer(buffer_len) if self.debug else None
-            fd = lib.bpf_prog_load(prog_type,
-                    lib.bpf_function_start(self.module, func_name.encode("ascii")),
-                    lib.bpf_function_size(self.module, func_name.encode("ascii")),
-                    lib.bpf_module_license(self.module),
-                    lib.bpf_module_kern_version(self.module),
-                    log_buf, ct.sizeof(log_buf) if log_buf else 0)
-            if fd < 0 and ct.get_errno() == errno.ENOSPC and self.debug:
-                buffer_len <<= 1
-            else:
-                break
-
-        if self.debug & DEBUG_BPF and log_buf.value:
-            print(log_buf.value.decode(), file=sys.stderr)
+        log_level = 0
+        if (self.debug & DEBUG_BPF_REGISTER_STATE):
+            log_level = 2
+        elif (self.debug & DEBUG_BPF):
+            log_level = 1
+        fd = lib.bpf_prog_load(prog_type,
+                func_name.encode("ascii"),
+                lib.bpf_function_start(self.module, func_name.encode("ascii")),
+                lib.bpf_function_size(self.module, func_name.encode("ascii")),
+                lib.bpf_module_license(self.module),
+                lib.bpf_module_kern_version(self.module),
+                log_level, None, 0);
 
         if fd < 0:
             atexit.register(self.donothing)
@@ -572,7 +574,7 @@ class BPF(object):
         self._del_kprobe(ev_name)
 
     @staticmethod
-    def attach_xdp(dev, fn, flags):
+    def attach_xdp(dev, fn, flags=0):
         '''
             This function attaches a BPF function to a device on the device
             driver level (XDP)
@@ -591,12 +593,12 @@ class BPF(object):
                             % (dev, errstr))
 
     @staticmethod
-    def remove_xdp(dev):
+    def remove_xdp(dev, flags=0):
         '''
             This function removes any BPF function from a device on the
             device driver level (XDP)
         '''
-        res = lib.bpf_attach_xdp(dev.encode("ascii"), -1, 0)
+        res = lib.bpf_attach_xdp(dev.encode("ascii"), -1, flags)
         if res < 0:
             errstr = os.strerror(ct.get_errno())
             raise Exception("Failed to detach BPF from device %s: %s"
@@ -878,7 +880,7 @@ class BPF(object):
 
         self._check_probe_quota(1)
         fn = self.load_func(fn_name, BPF.KPROBE)
-        ev_name = "r_%s_0x%x" % (self._probe_repl.sub("_", path), addr)
+        ev_name = self._get_uprobe_evname("r", path, addr, pid)
         res = lib.bpf_attach_uprobe(fn.fd, 1, ev_name.encode("ascii"),
                 path.encode("ascii"), addr, pid, cpu, group_fd,
                 self._reader_cb_impl, ct.cast(id(self), ct.py_object))
@@ -897,7 +899,7 @@ class BPF(object):
 
         name = str(name)
         (path, addr) = BPF._check_path_symbol(name, sym, addr, pid)
-        ev_name = "r_%s_0x%x" % (self._probe_repl.sub("_", path), addr)
+        ev_name = self._get_uprobe_evname("r", path, addr, pid)
         if ev_name not in self.open_uprobes:
             raise Exception("Uretprobe %s is not attached" % ev_name)
         lib.perf_reader_free(self.open_uprobes[ev_name])

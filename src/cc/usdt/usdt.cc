@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <algorithm>
 #include <cstring>
 #include <sstream>
 #include <unordered_set>
@@ -23,6 +24,7 @@
 
 #include "bcc_elf.h"
 #include "bcc_proc.h"
+#include "common.h"
 #include "usdt.h"
 #include "vendor/tinyformat.hpp"
 #include "bcc_usdt.h"
@@ -30,7 +32,13 @@
 namespace USDT {
 
 Location::Location(uint64_t addr, const char *arg_fmt) : address_(addr) {
+#ifdef __aarch64__
+  ArgumentParser_aarch64 parser(arg_fmt);
+#elif __powerpc64__
+  ArgumentParser_powerpc64 parser(arg_fmt);
+#else
   ArgumentParser_x64 parser(arg_fmt);
+#endif
   while (!parser.done()) {
     Argument arg;
     if (!parser.parse(&arg))
@@ -172,7 +180,7 @@ bool Probe::usdt_getarg(std::ostream &stream) {
         return false;
       stream << "\n  return 0;\n}\n";
     } else {
-      stream << "  switch(ctx->ip) {\n";
+      stream << "  switch(PT_REGS_IP(ctx)) {\n";
       for (Location &location : locations_) {
         uint64_t global_address;
 
@@ -197,13 +205,26 @@ void Probe::add_location(uint64_t addr, const char *fmt) {
   locations_.emplace_back(addr, fmt);
 }
 
+void Probe::finalize_locations() {
+  std::sort(locations_.begin(), locations_.end(),
+            [](const Location &a, const Location &b) {
+              return a.address_ < b.address_;
+            });
+  auto last = std::unique(locations_.begin(), locations_.end(),
+                          [](const Location &a, const Location &b) {
+                            return a.address_ == b.address_;
+                          });
+  locations_.erase(last, locations_.end());
+}
+
 void Context::_each_probe(const char *binpath, const struct bcc_elf_usdt *probe,
                           void *p) {
   Context *ctx = static_cast<Context *>(p);
   ctx->add_probe(binpath, probe);
 }
 
-int Context::_each_module(const char *modpath, uint64_t, uint64_t, bool, void *p) {
+int Context::_each_module(const char *modpath, uint64_t, uint64_t, uint64_t,
+                          bool, void *p) {
   Context *ctx = static_cast<Context *>(p);
   // Modules may be reported multiple times if they contain more than one
   // executable region. We are going to parse the ELF on disk anyway, so we
@@ -285,7 +306,8 @@ void Context::each_uprobe(each_uprobe_cb callback) {
   }
 }
 
-Context::Context(const std::string &bin_path) : loaded_(false) {
+Context::Context(const std::string &bin_path)
+    : mount_ns_instance_(new ProcMountNS(-1)), loaded_(false) {
   std::string full_path = resolve_bin_path(bin_path);
   if (!full_path.empty()) {
     if (bcc_elf_foreach_usdt(full_path.c_str(), _each_probe, this) == 0) {
@@ -293,25 +315,21 @@ Context::Context(const std::string &bin_path) : loaded_(false) {
       loaded_ = true;
     }
   }
+  for (const auto &probe : probes_)
+    probe->finalize_locations();
 }
 
 Context::Context(int pid) : pid_(pid), pid_stat_(pid),
   mount_ns_instance_(new ProcMountNS(pid)), loaded_(false) {
   if (bcc_procutils_each_module(pid, _each_module, this) == 0) {
-    // get exe command from /proc/<pid>/exe
-    // assume the maximum path length 4096, which should be
-    // sufficiently large to cover all use cases
-    char source[64];
-    char cmd_buf[4096];
-    snprintf(source, sizeof(source), "/proc/%d/exe", pid);
-    ssize_t cmd_len = readlink(source, cmd_buf, sizeof(cmd_buf) - 1);
-    if (cmd_len == -1)
+    cmd_bin_path_ = ebpf::get_pid_exe(pid);
+    if (cmd_bin_path_.empty())
       return;
-    cmd_buf[cmd_len] = '\0';
-    cmd_bin_path_.assign(cmd_buf, cmd_len + 1);
 
     loaded_ = true;
   }
+  for (const auto &probe : probes_)
+    probe->finalize_locations();
 }
 
 Context::~Context() {
@@ -355,6 +373,9 @@ int bcc_usdt_enable_probe(void *usdt, const char *probe_name,
 const char *bcc_usdt_genargs(void **usdt_array, int len) {
   static std::string storage_;
   std::ostringstream stream;
+
+  if (!len)
+    return "";
 
   stream << USDT::USDT_PROGRAM_HEADER;
   // Generate genargs codes for an array of USDT Contexts.

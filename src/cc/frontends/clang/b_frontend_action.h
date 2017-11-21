@@ -26,8 +26,6 @@
 
 #include "table_storage.h"
 
-#define DEBUG_PREPROCESSOR 0x4
-
 namespace clang {
 class ASTConsumer;
 class ASTContext;
@@ -42,6 +40,18 @@ class StringRef;
 namespace ebpf {
 
 class BFrontendAction;
+class FuncSource;
+
+// Traces maps with external pointers as values.
+class MapVisitor : public clang::RecursiveASTVisitor<MapVisitor> {
+ public:
+  explicit MapVisitor(std::set<clang::Decl *> &m);
+  bool VisitCallExpr(clang::CallExpr *Call);
+  void set_ptreg(clang::Decl *D) { ptregs_.insert(D); }
+ private:
+  std::set<clang::Decl *> &m_;
+  std::set<clang::Decl *> ptregs_;
+};
 
 // Type visitor and rewriter for B programs.
 // It will look for B-specific features and rewrite them into a valid
@@ -78,7 +88,7 @@ class BTypeVisitor : public clang::RecursiveASTVisitor<BTypeVisitor> {
 // Do a depth-first search to rewrite all pointers that need to be probed
 class ProbeVisitor : public clang::RecursiveASTVisitor<ProbeVisitor> {
  public:
-  explicit ProbeVisitor(clang::ASTContext &C, clang::Rewriter &rewriter);
+  explicit ProbeVisitor(clang::ASTContext &C, clang::Rewriter &rewriter, std::set<clang::Decl *> &m);
   bool VisitVarDecl(clang::VarDecl *Decl);
   bool VisitCallExpr(clang::CallExpr *Call);
   bool VisitBinaryOperator(clang::BinaryOperator *E);
@@ -95,24 +105,20 @@ class ProbeVisitor : public clang::RecursiveASTVisitor<ProbeVisitor> {
   std::set<clang::Decl *> fn_visited_;
   std::set<clang::Expr *> memb_visited_;
   std::set<clang::Decl *> ptregs_;
+  std::set<clang::Decl *> &m_;
 };
 
 // A helper class to the frontend action, walks the decls
 class BTypeConsumer : public clang::ASTConsumer {
  public:
-  explicit BTypeConsumer(clang::ASTContext &C, BFrontendAction &fe);
+  explicit BTypeConsumer(clang::ASTContext &C, BFrontendAction &fe, clang::Rewriter &rewriter, std::set<clang::Decl *> &map);
   bool HandleTopLevelDecl(clang::DeclGroupRef Group) override;
+  void HandleTranslationUnit(clang::ASTContext &Context) override;
  private:
-  BTypeVisitor visitor_;
-};
-
-// A helper class to the frontend action, walks the decls
-class ProbeConsumer : public clang::ASTConsumer {
- public:
-  ProbeConsumer(clang::ASTContext &C, clang::Rewriter &rewriter);
-  bool HandleTopLevelDecl(clang::DeclGroupRef Group) override;
- private:
-  ProbeVisitor visitor_;
+  BFrontendAction &fe_;
+  MapVisitor map_visitor_;
+  BTypeVisitor btype_visitor_;
+  ProbeVisitor probe_visitor_;
 };
 
 // Create a B program in 2 phases (everything else is normal C frontend):
@@ -123,8 +129,10 @@ class BFrontendAction : public clang::ASTFrontendAction {
   // Initialize with the output stream where the new source file contents
   // should be written.
   BFrontendAction(llvm::raw_ostream &os, unsigned flags, TableStorage &ts,
-                  const std::string &id, const std::string &maps_ns,
-                  const std::string &other_id);
+                  const std::string &id, const std::string &main_path,
+                  FuncSource &func_src, std::string &mod_src,
+                  const std::string &maps_ns, const std::string &other_id);
+
   // Called by clang when the AST has been completed, here the output stream
   // will be flushed.
   void EndSourceFileAction() override;
@@ -137,6 +145,8 @@ class BFrontendAction : public clang::ASTFrontendAction {
   std::string id() const { return id_; }
   std::string maps_ns() const { return maps_ns_; }
   std::string other_id() const { return other_id_; }
+  bool is_rewritable_ext_func(clang::FunctionDecl *D);
+
  private:
   llvm::raw_ostream &os_;
   unsigned flags_;
@@ -145,6 +155,12 @@ class BFrontendAction : public clang::ASTFrontendAction {
   std::string maps_ns_;
   std::string other_id_;
   std::unique_ptr<clang::Rewriter> rewriter_;
+  friend class BTypeVisitor;
+  std::map<std::string, clang::SourceRange> func_range_;
+  const std::string &main_path_;
+  FuncSource &func_src_;
+  std::string &mod_src_;
+  std::set<clang::Decl *> m_;
 };
 
 }  // namespace visitor

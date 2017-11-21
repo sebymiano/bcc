@@ -6,7 +6,7 @@
 # USAGE: solisten.py [-h] [-p PID] [--show-netns]
 #
 # This is provided as a basic example of TCP connection & socket tracing.
-# It could be usefull in scenarios where load balancers needs to be updated
+# It could be useful in scenarios where load balancers needs to be updated
 # dynamically as application is fully initialized.
 #
 # All IPv4 listen attempts are traced, even if they ultimately fail or the
@@ -46,10 +46,12 @@ parser.add_argument("-n", "--netns", default=0, type=int,
 
 # BPF Program
 bpf_text = """
-#include <net/sock.h>
-#include <net/inet_sock.h>
 #include <net/net_namespace.h>
 #include <bcc/proto.h>
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wenum-conversion"
+#include <net/inet_sock.h>
+#pragma clang diagnostic pop
 
 // Common structure for UDP/TCP IPv4/IPv6
 struct listen_evt_t {
@@ -69,7 +71,7 @@ int kprobe__inet_listen(struct pt_regs *ctx, struct socket *sock, int backlog)
 {
         // cast types. Intermediate cast not needed, kept for readability
         struct sock *sk = sock->sk;
-        struct inet_sock *inet = inet_sk(sk);
+        struct inet_sock *inet = (struct inet_sock *)sk;
 
         // Built event for userland
         struct listen_evt_t evt = {
@@ -91,7 +93,7 @@ int kprobe__inet_listen(struct pt_regs *ctx, struct socket *sock, int backlog)
         ##FILTER_PID##
 
         // Get port
-        bpf_probe_read(&evt.lport, sizeof(u16), &(inet->inet_sport));
+        evt.lport = inet->inet_sport;
         evt.lport = ntohs(evt.lport);
 
         // Get network namespace id, if kernel supports it
@@ -105,8 +107,7 @@ int kprobe__inet_listen(struct pt_regs *ctx, struct socket *sock, int backlog)
 
         // Get IP
         if (family == AF_INET) {
-            bpf_probe_read(evt.laddr, sizeof(u32), &(inet->inet_rcv_saddr));
-            evt.laddr[0] = be32_to_cpu(evt.laddr[0]);
+            evt.laddr[0] = inet->inet_rcv_saddr;
         } else if (family == AF_INET6) {
             bpf_probe_read(evt.laddr, sizeof(evt.laddr),
                            sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);

@@ -17,6 +17,7 @@ import ctypes as ct
 from functools import reduce
 import multiprocessing
 import os
+import errno
 
 from .libbcc import lib, _RAW_CB_TYPE, _LOST_CB_TYPE
 from .perf import Perf
@@ -302,7 +303,7 @@ class TableBase(MutableMapping):
         it will be used to produce a bucket value for the histogram keys.
         If the value of strip_leading_zero is not False, prints a histogram
         that is omitted leading zeros from the beginning. The maximum index
-        allowed is log2_index_max (65), which will accomodate any 64-bit
+        allowed is log2_index_max (65), which will accommodate any 64-bit
         integer in the histogram.
         """
         if isinstance(self.Key(), ct.Structure):
@@ -523,8 +524,24 @@ class PerfEventArray(ArrayBase):
             self._open_perf_buffer(i, callback, page_cnt, lost_cb)
 
     def _open_perf_buffer(self, cpu, callback, page_cnt, lost_cb):
-        fn = _RAW_CB_TYPE(lambda _, data, size: callback(cpu, data, size))
-        lost_fn = _LOST_CB_TYPE(lambda lost: lost_cb(lost)) if lost_cb else ct.cast(None, _LOST_CB_TYPE)
+        def raw_cb_(_, data, size):
+            try:
+                callback(cpu, data, size)
+            except IOError as e:
+                if e.errno == errno.EPIPE:
+                    exit()
+                else:
+                    raise e
+        def lost_cb_(lost):
+            try:
+                lost_cb(lost)
+            except IOError as e:
+                if e.errno == errno.EPIPE:
+                    exit()
+                else:
+                    raise e
+        fn = _RAW_CB_TYPE(raw_cb_)
+        lost_fn = _LOST_CB_TYPE(lost_cb_) if lost_cb else ct.cast(None, _LOST_CB_TYPE)
         reader = lib.bpf_open_perf_buffer(fn, lost_fn, None, -1, cpu, page_cnt)
         if not reader:
             raise Exception("Could not open perf buffer")

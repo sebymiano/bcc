@@ -326,7 +326,7 @@ union bpf_attr {
  * int bpf_map_delete_elem(&map, &key)
  *     Return: 0 on success or negative error
  *
- * int bpf_probe_read(void *dst, int size, void *src)
+ * int bpf_probe_read(void *dst, int size, const void *src)
  *     Return: 0 on success or negative error
  *
  * u64 bpf_ktime_get_ns(void)
@@ -434,6 +434,13 @@ union bpf_attr {
  *	    all bits - reserved
  *     Return: cls_bpf: TC_ACT_REDIRECT on success or TC_ACT_SHOT on error
  *	       xdp_bfp: XDP_REDIRECT on success or XDP_ABORT on error
+ * int bpf_redirect_map(map, key, flags)
+ *     redirect to endpoint in map
+ *     @map: pointer to dev map
+ *     @key: index in map to lookup
+ *     @flags: --
+ *     Return: XDP_REDIRECT on success or XDP_ABORT on error
+ *
  * int bpf_redirect_map(map, key, flags)
  *     redirect to endpoint in map
  *     @map: pointer to dev map

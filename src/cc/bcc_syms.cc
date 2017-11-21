@@ -28,9 +28,10 @@
 #include "bcc_perf_map.h"
 #include "bcc_proc.h"
 #include "bcc_syms.h"
+#include "common.h"
+#include "vendor/tinyformat.hpp"
 
 #include "syms.h"
-#include "vendor/tinyformat.hpp"
 
 ino_t ProcStat::getinode_() {
   struct stat s;
@@ -60,21 +61,25 @@ void KSyms::refresh() {
 bool KSyms::resolve_addr(uint64_t addr, struct bcc_symbol *sym, bool demangle) {
   refresh();
 
-  if (syms_.empty()) {
-    sym->name = nullptr;
-    sym->demangle_name = nullptr;
-    sym->module = nullptr;
-    sym->offset = 0x0;
-    return false;
+  std::vector<Symbol>::iterator it;
+
+  if (syms_.empty())
+    goto unknown_symbol;
+
+  it = std::upper_bound(syms_.begin(), syms_.end(), Symbol("", addr));
+  if (it != syms_.begin()) {
+    it--;
+    sym->name = (*it).name.c_str();
+    if (demangle)
+      sym->demangle_name = sym->name;
+    sym->module = "kernel";
+    sym->offset = addr - (*it).addr;
+    return true;
   }
 
-  auto it = std::upper_bound(syms_.begin(), syms_.end(), Symbol("", addr)) - 1;
-  sym->name = (*it).name.c_str();
-  if (demangle)
-    sym->demangle_name = sym->name;
-  sym->module = "kernel";
-  sym->offset = addr - (*it).addr;
-  return true;
+unknown_symbol:
+  memset(sym, 0, sizeof(struct bcc_symbol));
+  return false;
 }
 
 bool KSyms::resolve_name(const char *_unused, const char *name,
@@ -109,8 +114,31 @@ ProcSyms::ProcSyms(int pid, struct bcc_symbol_option *option)
   load_modules();
 }
 
-bool ProcSyms::load_modules() {
-  return bcc_procutils_each_module(pid_, _add_module, this) == 0;
+int ProcSyms::_add_load_sections(uint64_t v_addr, uint64_t mem_sz,
+                                 uint64_t file_offset, void *payload) {
+  auto module = static_cast<Module *>(payload);
+  module->ranges_.emplace_back(v_addr, v_addr + mem_sz, file_offset);
+  return 0;
+}
+
+void ProcSyms::load_exe() {
+  std::string exe = ebpf::get_pid_exe(pid_);
+  Module module(exe.c_str(), mount_ns_instance_.get(), &symbol_option_);
+
+  if (module.type_ != ModuleType::EXEC)
+    return;
+
+  ProcMountNSGuard g(mount_ns_instance_.get());
+
+  bcc_elf_foreach_load_section(exe.c_str(), &_add_load_sections, &module);
+
+  if (!module.ranges_.empty())
+    modules_.emplace_back(std::move(module));
+}
+
+void ProcSyms::load_modules() {
+  load_exe();
+  bcc_procutils_each_module(pid_, _add_module, this);
 }
 
 void ProcSyms::refresh() {
@@ -121,7 +149,7 @@ void ProcSyms::refresh() {
 }
 
 int ProcSyms::_add_module(const char *modname, uint64_t start, uint64_t end,
-                          bool check_mount_ns, void *payload) {
+                          uint64_t offset, bool check_mount_ns, void *payload) {
   ProcSyms *ps = static_cast<ProcSyms *>(payload);
   auto it = std::find_if(
       ps->modules_.begin(), ps->modules_.end(),
@@ -130,12 +158,19 @@ int ProcSyms::_add_module(const char *modname, uint64_t start, uint64_t end,
     auto module = Module(
         modname, check_mount_ns ? ps->mount_ns_instance_.get() : nullptr,
         &ps->symbol_option_);
-    if (module.init())
+    if (!bcc_is_perf_map(modname) || module.type_ != ModuleType::UNKNOWN)
+      // Always add the module even if we can't read it, so that we could
+      // report correct module name. Unless it's a perf map that we only
+      // add readable ones.
       it = ps->modules_.insert(ps->modules_.end(), std::move(module));
     else
       return 0;
   }
-  it->ranges_.emplace_back(start, end);
+  it->ranges_.emplace_back(start, end, offset);
+  // perf-PID map is added last. We try both inside the Process's mount
+  // namespace + chroot, and in global /tmp. Make sure we only add one.
+  if (it->type_ == ModuleType::PERF_MAP)
+    return -1;
 
   return 0;
 }
@@ -145,40 +180,40 @@ bool ProcSyms::resolve_addr(uint64_t addr, struct bcc_symbol *sym,
   if (procstat_.is_stale())
     refresh();
 
-  sym->module = nullptr;
-  sym->name = nullptr;
-  sym->demangle_name = nullptr;
-  sym->offset = 0x0;
+  memset(sym, 0, sizeof(struct bcc_symbol));
 
   const char *original_module = nullptr;
   uint64_t offset;
+  bool only_perf_map = false;
   for (Module &mod : modules_) {
+    if (only_perf_map && (mod.type_ != ModuleType::PERF_MAP))
+      continue;
     if (mod.contains(addr, offset)) {
-      bool res = mod.find_addr(offset, sym);
-      if (demangle) {
-        if (sym->name)
-          sym->demangle_name =
-              abi::__cxa_demangle(sym->name, nullptr, nullptr, nullptr);
-        if (!sym->demangle_name)
-          sym->demangle_name = sym->name;
-      }
-      // If we have a match, return right away. But if we don't have a match in
-      // this module, we might have a match in the perf map (even though the
-      // module itself doesn't have symbols). Wait until we see the perf map if
-      // any, but keep the original module name for reporting.
-      if (res) {
-        // If we have already seen this module, report the original name rather
-        // than the perf map name:
-        if (original_module)
-          sym->module = original_module;
-        return res;
+      if (mod.find_addr(offset, sym)) {
+        if (demangle) {
+          if (sym->name)
+            sym->demangle_name =
+                abi::__cxa_demangle(sym->name, nullptr, nullptr, nullptr);
+          if (!sym->demangle_name)
+            sym->demangle_name = sym->name;
+        }
+        return true;
       } else if (mod.type_ != ModuleType::PERF_MAP) {
-        // Record the module to which this symbol belongs, so that even if it's
-        // later found using a perf map, we still report the right module name.
+        // In this case, we found the address in the range of a module, but
+        // not able to find a symbol of that address in the module.
+        // Thus, we would try to find the address in perf map, and
+        // save the module's name in case we will need it later.
         original_module = mod.name_.c_str();
+        only_perf_map = true;
       }
     }
   }
+  // If we didn't find the symbol anywhere, the module name is probably
+  // set to be the perf map's name as it would be the last we tried.
+  // In this case, if we have found the address previously in a module,
+  // report the saved original module name instead.
+  if (original_module)
+    sym->module = original_module;
   return false;
 }
 
@@ -200,29 +235,22 @@ ProcSyms::Module::Module(const char *name, ProcMountNS *mount_ns,
       loaded_(false),
       mount_ns_(mount_ns),
       symbol_option_(option),
-      type_(ModuleType::UNKNOWN) {}
-
-bool ProcSyms::Module::init() {
+      type_(ModuleType::UNKNOWN) {
   ProcMountNSGuard g(mount_ns_);
   int elf_type = bcc_elf_get_type(name_.c_str());
+  // The Module is an ELF file
   if (elf_type >= 0) {
-    if (elf_type == ET_EXEC) {
+    if (elf_type == ET_EXEC)
       type_ = ModuleType::EXEC;
-      return true;
-    }
-    if (elf_type == ET_DYN) {
+    else if (elf_type == ET_DYN)
       type_ = ModuleType::SO;
-      return true;
-    }
-    return false;
+    return;
   }
-
-  if (bcc_is_perf_map(name_.c_str()) == 1) {
+  // Other symbol files
+  if (bcc_is_valid_perf_map(name_.c_str()) == 1)
     type_ = ModuleType::PERF_MAP;
-    return true;
-  }
-
-  return false;
+  else if (bcc_elf_is_vdso(name_.c_str()) == 1)
+    type_ = ModuleType::VDSO;
 }
 
 int ProcSyms::Module::_add_symbol(const char *symname, uint64_t start,
@@ -238,12 +266,17 @@ void ProcSyms::Module::load_sym_table() {
     return;
   loaded_ = true;
 
+  if (type_ == ModuleType::UNKNOWN)
+    return;
+
   ProcMountNSGuard g(mount_ns_);
 
   if (type_ == ModuleType::PERF_MAP)
     bcc_perf_map_foreach_sym(name_.c_str(), _add_symbol, this);
   if (type_ == ModuleType::EXEC || type_ == ModuleType::SO)
     bcc_elf_foreach_sym(name_.c_str(), _add_symbol, symbol_option_, this);
+  if (type_ == ModuleType::VDSO)
+    bcc_elf_foreach_vdso_sym(_add_symbol, this);
 
   std::sort(syms_.begin(), syms_.end());
 }
@@ -251,7 +284,9 @@ void ProcSyms::Module::load_sym_table() {
 bool ProcSyms::Module::contains(uint64_t addr, uint64_t &offset) const {
   for (const auto &range : ranges_)
     if (addr >= range.start && addr < range.end) {
-      offset = type_ == ModuleType::SO ? addr - range.start : addr;
+      offset = (type_ == ModuleType::SO || type_ == ModuleType::VDSO)
+                   ? (addr - range.start + range.file_offset)
+                   : addr;
       return true;
     }
   return false;
@@ -363,13 +398,15 @@ void bcc_symcache_refresh(void *resolver) {
 struct mod_st {
   const char *name;
   uint64_t start;
+  uint64_t file_offset;
 };
 
-static int _find_module(const char *modname, uint64_t start, uint64_t end, bool,
-                        void *p) {
+static int _find_module(const char *modname, uint64_t start, uint64_t end,
+                        uint64_t offset, bool, void *p) {
   struct mod_st *mod = (struct mod_st *)p;
   if (!strcmp(modname, mod->name)) {
     mod->start = start;
+    mod->file_offset = offset;
     return -1;
   }
   return 0;
@@ -382,7 +419,7 @@ int bcc_resolve_global_addr(int pid, const char *module, const uint64_t address,
       mod.start == 0x0)
     return -1;
 
-  *global = mod.start + address;
+  *global = mod.start + mod.file_offset + address;
   return 0;
 }
 
@@ -416,11 +453,24 @@ static int _find_sym(const char *symname, uint64_t addr, uint64_t,
   return 0;
 }
 
+struct load_addr_t {
+  uint64_t target_addr;
+  uint64_t binary_addr;
+};
+int _find_load(uint64_t v_addr, uint64_t mem_sz, uint64_t file_offset,
+                       void *payload) {
+  struct load_addr_t *addr = static_cast<load_addr_t *>(payload);
+  if (addr->target_addr >= v_addr && addr->target_addr < (v_addr + mem_sz)) {
+    addr->binary_addr = addr->target_addr - v_addr + file_offset;
+    return -1;
+  }
+  return 0;
+}
+
 int bcc_resolve_symname(const char *module, const char *symname,
                         const uint64_t addr, int pid,
                         struct bcc_symbol_option *option,
                         struct bcc_symbol *sym) {
-  uint64_t load_addr;
   static struct bcc_symbol_option default_option = {
     .use_debug_file = 1,
     .check_debug_file_crc = 1,
@@ -437,29 +487,37 @@ int bcc_resolve_symname(const char *module, const char *symname,
   } else {
     sym->module = bcc_procutils_which_so(module, pid);
   }
-
   if (sym->module == NULL)
     return -1;
 
   ProcMountNSGuard g(pid);
 
-  if (bcc_elf_loadaddr(sym->module, &load_addr) < 0)
-    goto invalid_module;
-
   sym->name = symname;
   sym->offset = addr;
-
   if (option == NULL)
     option = &default_option;
 
   if (sym->name && sym->offset == 0x0)
     if (bcc_elf_foreach_sym(sym->module, _find_sym, option, sym) < 0)
       goto invalid_module;
-
   if (sym->offset == 0x0)
     goto invalid_module;
 
-  sym->offset = (sym->offset - load_addr);
+  // For executable (ET_EXEC) binaries, translate the virtual address
+  // to physical address in the binary file.
+  // For shared object binaries (ET_DYN), the address from symbol table should
+  // already be physical address in the binary file.
+  if (bcc_elf_get_type(sym->module) == ET_EXEC) {
+    struct load_addr_t addr = {
+      .target_addr = sym->offset,
+      .binary_addr = 0x0,
+    };
+    if (bcc_elf_foreach_load_section(sym->module, &_find_load, &addr) < 0)
+      goto invalid_module;
+    if (!addr.binary_addr)
+      goto invalid_module;
+    sym->offset = addr.binary_addr;
+  }
   return 0;
 
 invalid_module:
@@ -468,16 +526,5 @@ invalid_module:
     sym->module = NULL;
   }
   return -1;
-}
-
-void *bcc_enter_mount_ns(int pid) {
-  return static_cast<void *>(new ProcMountNSGuard(pid));
-}
-
-void bcc_exit_mount_ns(void **guard) {
-  if (guard && *guard) {
-    delete static_cast<ProcMountNSGuard *>(*guard);
-    *guard = NULL;
-  }
 }
 }

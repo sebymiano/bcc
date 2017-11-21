@@ -5,6 +5,7 @@
 import distutils.version
 import subprocess
 import os
+import re
 from unittest import main, skipUnless, TestCase
 
 TOOLS_DIR = "../../tools/"
@@ -49,6 +50,14 @@ class SmokeTests(TestCase):
         #      this was what we asked for using kill=True.
         self.assertTrue((rc == 0 and allow_early) or rc == 124
                         or (rc == 137 and kill), "rc was %d" % rc)
+
+    def kmod_loaded(self, mod):
+        mods = open("/proc/modules", "r")
+        reg = re.compile("^%s\s" % mod)
+        for line in mods:
+            if reg.match(line):
+                return 1
+            return 0
 
     def setUp(self):
         pass
@@ -209,6 +218,20 @@ class SmokeTests(TestCase):
         # MySQL to be running, or it fails to attach.
         pass
 
+    @skipUnless(kernel_version_ge(4,4), "requires kernel >= 4.4")
+    def test_nfsslower(self):
+        if(self.kmod_loaded("nfs")):
+            self.run_with_int("nfsslower.py")
+        else:
+            pass
+
+    @skipUnless(kernel_version_ge(4,4), "requires kernel >= 4.4")
+    def test_nfsdist(self):
+        if(self.kmod_loaded("nfs")):
+            self.run_with_duration("nfsdist.py 1 1")
+        else:
+            pass
+
     @skipUnless(kernel_version_ge(4,6), "requires kernel >= 4.6")
     def test_offcputime(self):
         self.run_with_duration("offcputime.py 1")
@@ -310,7 +333,7 @@ class SmokeTests(TestCase):
         # This attaches a large number (300+) kprobes, which can be slow,
         # so use an increased timeout value.
         self.run_with_int("lib/ucalls.py -l none -S %d" % os.getpid(),
-                          timeout=30, kill_timeout=30)
+                          timeout=60, kill_timeout=60)
 
     @skipUnless(kernel_version_ge(4,4), "requires kernel >= 4.4")
     def test_uflow(self):
@@ -338,11 +361,12 @@ class SmokeTests(TestCase):
         self.run_with_int("lib/uthreads.py %d" % os.getpid())
 
     def test_vfscount(self):
-        self.run_with_int("vfscount.py")
+        self.run_with_int("vfscount.py", timeout=15, kill_timeout=15)
 
     def test_vfsstat(self):
         self.run_with_duration("vfsstat.py 1 1")
 
+    @skipUnless(kernel_version_ge(4,6), "requires kernel >= 4.6")
     def test_wakeuptime(self):
         self.run_with_duration("wakeuptime.py 1")
 

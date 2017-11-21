@@ -199,7 +199,7 @@ StatusTuple BPF::attach_uprobe(const std::string& binary_path,
   uint64_t offset;
   TRY2(check_binary_symbol(binary_path, symbol, symbol_addr, module, offset));
 
-  std::string probe_event = get_uprobe_event(module, offset, attach_type);
+  std::string probe_event = get_uprobe_event(module, offset, attach_type, pid);
   if (uprobes_.find(probe_event) != uprobes_.end())
     return StatusTuple(-1, "uprobe %s already attached", probe_event.c_str());
 
@@ -347,12 +347,13 @@ StatusTuple BPF::detach_kprobe(const std::string& kernel_func,
 
 StatusTuple BPF::detach_uprobe(const std::string& binary_path,
                                const std::string& symbol, uint64_t symbol_addr,
-                               bpf_probe_attach_type attach_type) {
+                               bpf_probe_attach_type attach_type,
+                               pid_t pid) {
   std::string module;
   uint64_t offset;
   TRY2(check_binary_symbol(binary_path, symbol, symbol_addr, module, offset));
 
-  std::string event = get_uprobe_event(module, offset, attach_type);
+  std::string event = get_uprobe_event(module, offset, attach_type, pid);
   auto it = uprobes_.find(event);
   if (it == uprobes_.end())
     return StatusTuple(-1, "No open %suprobe for binary %s symbol %s addr %lx",
@@ -479,14 +480,24 @@ StatusTuple BPF::load_func(const std::string& func_name,
                        func_name.c_str());
   size_t func_size = bpf_module_->function_size(func_name);
 
-  fd = bpf_prog_load(type, reinterpret_cast<struct bpf_insn*>(func_start),
+  int log_level = 0;
+  if (flag_ & DEBUG_BPF_REGISTER_STATE)
+    log_level = 2;
+  else if (flag_ & DEBUG_BPF)
+    log_level = 1;
+
+  fd = bpf_prog_load(type, func_name.c_str(),
+                     reinterpret_cast<struct bpf_insn*>(func_start),
                      func_size, bpf_module_->license(),
-                     bpf_module_->kern_version(), nullptr,
-                     0  // BPFModule will handle error printing
-                     );
+                     bpf_module_->kern_version(),
+                     log_level, nullptr, 0);
 
   if (fd < 0)
     return StatusTuple(-1, "Failed to load %s: %d", func_name.c_str(), fd);
+
+  bpf_module_->annotate_prog_tag(func_name, fd,
+                                 reinterpret_cast<struct bpf_insn*>(func_start),
+                                 func_size);
   funcs_[func_name] = fd;
   return StatusTuple(0);
 }
@@ -558,10 +569,13 @@ BPFStackTable BPF::get_stack_table(const std::string& name,
 }
 
 std::string BPF::get_uprobe_event(const std::string& binary_path,
-                                  uint64_t offset, bpf_probe_attach_type type) {
+                                  uint64_t offset, bpf_probe_attach_type type,
+                                  pid_t pid) {
   std::string res = attach_type_prefix(type) + "_";
   res += sanitize_str(binary_path, &BPF::uprobe_path_validator);
   res += "_0x" + uint_to_hex(offset);
+  if (pid != -1)
+    res += "_" + std::to_string(pid);
   return res;
 }
 
