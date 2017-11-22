@@ -75,7 +75,7 @@ StatusTuple BPF::init(const std::string& bpf_program,
     return StatusTuple(-1, "Unable to initialize BPF program");
 
   return StatusTuple(0);
-};
+}
 
 BPF::~BPF() {
   auto res = detach_all();

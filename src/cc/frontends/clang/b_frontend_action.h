@@ -152,14 +152,14 @@ class BFrontendAction : public clang::ASTFrontendAction {
   unsigned flags_;
   TableStorage &ts_;
   std::string id_;
-  std::string maps_ns_;
-  std::string other_id_;
   std::unique_ptr<clang::Rewriter> rewriter_;
   friend class BTypeVisitor;
   std::map<std::string, clang::SourceRange> func_range_;
   const std::string &main_path_;
   FuncSource &func_src_;
   std::string &mod_src_;
+  std::string maps_ns_;
+  std::string other_id_;
   std::set<clang::Decl *> m_;
 };
 

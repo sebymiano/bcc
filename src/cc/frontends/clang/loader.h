@@ -63,7 +63,8 @@ class ClangLoader {
                  const std::string &main_path,
                  const std::unique_ptr<llvm::MemoryBuffer> &main_buf,
                  const std::string &id, FuncSource &func_src,
-                 std::string &mod_src, bool use_internal_bpfh);
+                 std::string &mod_src, bool use_internal_bpfh,
+                 const std::string &maps_ns, const std::string &other_id);
 
  private:
   static std::map<std::string, std::unique_ptr<llvm::MemoryBuffer>> remapped_files_;
