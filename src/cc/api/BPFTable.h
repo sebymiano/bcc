@@ -280,6 +280,8 @@ public:
   BPFDevmapTable(const TableDesc& desc) : BPFTableBase<int, int>(desc) {
     if(desc.type != BPF_MAP_TYPE_DEVMAP)
       throw std::invalid_argument("Table '" + desc.name + "' is not a devmap table");
+    
+    fd_ = desc.fd;
   }
   
   StatusTuple update_value(const int& index, const int& value) {
@@ -305,6 +307,13 @@ public:
       return StatusTuple(-1, "Error getting next key value: %s", std::strerror(errno));
     return StatusTuple(0);
   }
+
+  int get_fd() {
+  	return fd_;
+  }
+  
+private:
+  int fd_;
 };
 
 }  // namespace ebpf
