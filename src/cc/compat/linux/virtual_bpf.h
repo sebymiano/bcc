@@ -223,8 +223,8 @@ enum bpf_attach_type {
 #define BPF_OBJ_NAME_LEN 16U
 
 /* Flags for accessing BPF object */
-#define BPF_F_RDONLY		(1U << 3)
-#define BPF_F_WRONLY		(1U << 4)
+#define BPF_F_RDONLY           (1U << 3)
+#define BPF_F_WRONLY           (1U << 4)
 
 union bpf_attr {
 	struct { /* anonymous struct used by BPF_MAP_CREATE command */
@@ -263,7 +263,7 @@ union bpf_attr {
 		__u32		kern_version;	/* checked when prog_type=kprobe */
 		__u32		prog_flags;
 		char		prog_name[BPF_OBJ_NAME_LEN];
-		__u32		prog_target_ifindex;	/* ifindex of netdev to prep for */
+		__u32		prog_ifindex;    /* ifindex of netdev to prep for */
 	};
 
 	struct { /* anonymous struct used by BPF_OBJ_* commands */
@@ -994,18 +994,19 @@ struct bpf_perf_event_value {
 	__u64 running;
 };
 
-#define BPF_DEVCG_ACC_MKNOD	(1ULL << 0)
-#define BPF_DEVCG_ACC_READ	(1ULL << 1)
-#define BPF_DEVCG_ACC_WRITE	(1ULL << 2)
+#define BPF_DEVCG_ACC_MKNOD    (1ULL << 0)
+#define BPF_DEVCG_ACC_READ     (1ULL << 1)
+#define BPF_DEVCG_ACC_WRITE    (1ULL << 2)
 
-#define BPF_DEVCG_DEV_BLOCK	(1ULL << 0)
-#define BPF_DEVCG_DEV_CHAR	(1ULL << 1)
+#define BPF_DEVCG_DEV_BLOCK    (1ULL << 0)
+#define BPF_DEVCG_DEV_CHAR     (1ULL << 1)
 
 struct bpf_cgroup_dev_ctx {
 	__u32 access_type; /* (access << 16) | type */
 	__u32 major;
 	__u32 minor;
 };
+
 
 #endif /* _UAPI__LINUX_BPF_H__ */
 )********"
