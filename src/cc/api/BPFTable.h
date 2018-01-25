@@ -113,6 +113,8 @@ public:
     if (desc.type != BPF_MAP_TYPE_ARRAY &&
         desc.type != BPF_MAP_TYPE_PERCPU_ARRAY)
       throw std::invalid_argument("Table '" + desc.name + "' is not an array table");
+
+    fd_ = desc.fd;
   }
 
   StatusTuple get_value(const int& index, ValueType& value) {
@@ -125,6 +127,10 @@ public:
     if (!this->update(const_cast<int*>(&index), const_cast<ValueType*>(&value)))
       return StatusTuple(-1, "Error updating value: %s", std::strerror(errno));
     return StatusTuple(0);
+  }
+
+  int get_fd() {
+    return fd_;
   }
 
   ValueType operator[](const int& key) {
@@ -142,6 +148,9 @@ public:
 
     return res;
   }
+
+private:
+  int fd_;
 };
 
 template <class KeyType, class ValueType>
@@ -154,6 +163,8 @@ class BPFHashTable : public BPFTableBase<KeyType, ValueType> {
         desc.type != BPF_MAP_TYPE_LRU_HASH &&
         desc.type != BPF_MAP_TYPE_LRU_PERCPU_HASH)
       throw std::invalid_argument("Table '" + desc.name + "' is not a hash table");
+
+    fd_ = desc.fd;
   }
 
   StatusTuple get_value(const KeyType& key, ValueType& value) {
@@ -172,6 +183,10 @@ class BPFHashTable : public BPFTableBase<KeyType, ValueType> {
     if (!this->remove(const_cast<KeyType*>(&key)))
       return StatusTuple(-1, "Error removing value: %s", std::strerror(errno));
     return StatusTuple(0);
+  }
+
+  int get_fd() {
+        return fd_;
   }
 
   ValueType operator[](const KeyType& key) {
@@ -198,6 +213,9 @@ class BPFHashTable : public BPFTableBase<KeyType, ValueType> {
 
     return res;
   }
+
+private:
+  int fd_;
 };
 
 // From src/cc/export/helpers.h
@@ -280,28 +298,28 @@ public:
   BPFDevmapTable(const TableDesc& desc) : BPFTableBase<int, int>(desc) {
     if(desc.type != BPF_MAP_TYPE_DEVMAP)
       throw std::invalid_argument("Table '" + desc.name + "' is not a devmap table");
-    
+
     fd_ = desc.fd;
   }
-  
+
   StatusTuple update_value(const int& index, const int& value) {
     if (!this->update(const_cast<int*>(&index), const_cast<int*>(&value)))
       return StatusTuple(-1, "Error updating value: %s", std::strerror(errno));
     return StatusTuple(0);
   }
-  
+
   StatusTuple get_value(const int& index, int& value) {
     if (!this->lookup(const_cast<int*>(&index), &value))
       return StatusTuple(-1, "Error getting value: %s", std::strerror(errno));
     return StatusTuple(0);
   }
-  
+
   StatusTuple remove_value(const int& index) {
     if (!this->remove(const_cast<int*>(&index)))
       return StatusTuple(-1, "Error removing value: %s", std::strerror(errno));
     return StatusTuple(0);
   }
-  
+
   StatusTuple get_next_key(const int& index, int& value) {
     if (!this->next(const_cast<int*>(&index), &value))
       return StatusTuple(-1, "Error getting next key value: %s", std::strerror(errno));
@@ -311,7 +329,7 @@ public:
   int get_fd() {
   	return fd_;
   }
-  
+
 private:
   int fd_;
 };
