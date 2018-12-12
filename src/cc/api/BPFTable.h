@@ -39,6 +39,10 @@ template <class KeyType, class ValueType>
 class BPFTableBase {
  public:
   size_t capacity() { return desc.max_entries; }
+  int fd() const { return desc.fd; }
+
+  // TODO: It is here only for backward compatibility
+  int get_fd() const { return fd(); }
 
   StatusTuple string_to_key(const std::string& key_str, KeyType* key) {
     return desc.key_sscanf(key_str.c_str(), key);
@@ -104,6 +108,9 @@ class BPFTable : public BPFTableBase<void, void> {
   StatusTuple remove_value(const std::string& key_str);
 
   StatusTuple clear_table_non_atomic();
+  // TODO: It is here only for backward compatibility
+  StatusTuple clear();
+  StatusTuple get_table_offline(std::vector<std::pair<std::string, std::string>> &res);
 
   static size_t get_possible_cpu_count();
 };
@@ -365,6 +372,16 @@ class BPFCgroupArray : public BPFTableBase<int, int> {
   StatusTuple update_value(const int& index, const int& cgroup2_fd);
   StatusTuple update_value(const int& index, const std::string& cgroup2_path);
   StatusTuple remove_value(const int& index);
+};
+
+class BPFDevmapTable : public BPFTableBase<int, int> {
+public:
+  BPFDevmapTable(const TableDesc& desc);
+  
+  StatusTuple update_value(const int& index, const int& value);
+  StatusTuple get_value(const int& index, int& value);
+  StatusTuple remove_value(const int& index);
+
 };
 
 }  // namespace ebpf

@@ -180,6 +180,40 @@ StatusTuple BPFTable::clear_table_non_atomic() {
   return StatusTuple(0);
 }
 
+StatusTuple BPFTable::clear() {
+  return BPFTable::clear_table_non_atomic();
+}
+
+StatusTuple BPFTable::get_table_offline(
+  std::vector<std::pair<std::string, std::string>> &res) {
+  StatusTuple r(0);
+  char key[desc.key_size] = {0};
+  char value[desc.leaf_size] = {0};
+
+  std::string key_str;
+  std::string value_str;
+
+  if (!this->first(&key))
+    return StatusTuple(0);
+
+  while (true) {
+    if (!this->lookup(&key, &value))
+      break;
+    r = key_to_string(key, key_str);
+    if (r.code() != 0)
+      return r;
+
+    r = leaf_to_string(value, value_str);
+    if (r.code() != 0)
+      return r;
+    res.emplace_back(key_str, value_str);
+    if (!this->next(&key, &key))
+      break;
+  }
+
+  return StatusTuple(0);
+}
+
 size_t BPFTable::get_possible_cpu_count() { return get_possible_cpus().size(); }
 
 BPFStackTable::BPFStackTable(const TableDesc& desc, bool use_debug_file,
@@ -493,6 +527,33 @@ StatusTuple BPFCgroupArray::remove_value(const int& index) {
   if (!this->remove(const_cast<int*>(&index)))
     return StatusTuple(-1, "Error removing value: %s", std::strerror(errno));
   return StatusTuple(0);
+}
+
+BPFDevmapTable::BPFDevmapTable(const TableDesc& desc) 
+    : BPFTableBase<int, int>(desc) {
+    if(desc.type != BPF_MAP_TYPE_DEVMAP)
+      throw std::invalid_argument("Table '" + desc.name + 
+                                  "' is not a devmap table");
+}
+
+StatusTuple BPFDevmapTable::update_value(const int& index, 
+                                         const int& value) {
+    if (!this->update(const_cast<int*>(&index), const_cast<int*>(&value)))
+      return StatusTuple(-1, "Error updating value: %s", std::strerror(errno));
+    return StatusTuple(0);
+}
+
+StatusTuple BPFDevmapTable::get_value(const int& index, 
+                                      int& value) {
+    if (!this->lookup(const_cast<int*>(&index), &value))
+      return StatusTuple(-1, "Error getting value: %s", std::strerror(errno));
+    return StatusTuple(0);
+}
+
+StatusTuple BPFDevmapTable::remove_value(const int& index) {
+    if (!this->remove(const_cast<int*>(&index)))
+      return StatusTuple(-1, "Error removing value: %s", std::strerror(errno));
+    return StatusTuple(0);
 }
 
 }  // namespace ebpf
