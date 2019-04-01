@@ -17,6 +17,21 @@ R"********(
 #ifndef __BPF_HELPERS_H
 #define __BPF_HELPERS_H
 
+/* Before bpf_helpers.h is included, uapi bpf.h has been
+ * included, which references linux/types.h. This will bring
+ * in asm_volatile_goto definition if permitted based on
+ * compiler setup and kernel configs.
+ *
+ * clang does not support "asm volatile goto" yet.
+ * So redefine asm_volatile_goto to some invalid asm code.
+ * If asm_volatile_goto is actually used by the bpf program,
+ * a compilation error will appear.
+ */
+#ifdef asm_volatile_goto
+#undef asm_volatile_goto
+#define asm_volatile_goto(x...) asm volatile("invalid use of asm_volatile_goto")
+#endif
+
 #include <uapi/linux/bpf.h>
 #include <uapi/linux/if_packet.h>
 #include <linux/version.h>
@@ -415,6 +430,10 @@ static void * (*bpf_get_local_storage)(void *map, u64 flags) =
   (void *) BPF_FUNC_get_local_storage;
 static int (*bpf_sk_select_reuseport)(void *reuse, void *map, void *key, u64 flags) =
   (void *) BPF_FUNC_sk_select_reuseport;
+static int (*bpf_skb_ct_lookup)(void *ctx, void *ct, int flags) =
+  (void *) BPF_FUNC_skb_ct_lookup;
+static int (*bpf_skb_ct_commit)(void *ctx, void *ct, int flags) =
+  (void *) BPF_FUNC_skb_ct_commit;
 
 /* llvm builtin functions that eBPF C program may use to
  * emit BPF_LD_ABS and BPF_LD_IND instructions
