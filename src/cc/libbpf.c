@@ -483,13 +483,13 @@ int bpf_prog_load(enum bpf_prog_type prog_type, const char *name,
 
   attr.insns = ptr_to_u64((void *)insns);
   attr.insn_cnt = prog_len / sizeof(struct bpf_insn);
-  if (attr.insn_cnt > BPF_MAXINSNS) {
+  /*if (attr.insn_cnt > BPF_MAXINSNS) {
     errno = EINVAL;
     fprintf(stderr,
             "bpf: %s. Program %s too large (%u insns), at most %d insns\n\n",
             strerror(errno), name, attr.insn_cnt, BPF_MAXINSNS);
     return -1;
-  }
+  }*/
 
   attr.log_level = log_level;
   if (attr.log_level > 0) {
