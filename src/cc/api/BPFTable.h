@@ -68,6 +68,10 @@ class BPFTableBase {
   int get_fd() {
     return desc.fd;
   }
+  
+  const TableDesc &getTableDescription() {
+      return desc;
+  }
 
  protected:
   explicit BPFTableBase(const TableDesc& desc) : desc(desc) {}
