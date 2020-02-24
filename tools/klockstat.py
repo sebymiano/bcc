@@ -47,7 +47,7 @@ def positive_nonzero_int(val):
     return ival
 
 def stack_id_err(stack_id):
-    # -EFAULT in get_stackid normally means the stack-trace is not availible,
+    # -EFAULT in get_stackid normally means the stack-trace is not available,
     # Such as getting kernel stack trace in userspace code
     return (stack_id < 0) and (stack_id != -errno.EFAULT)
 
@@ -363,14 +363,14 @@ def display(sort, maxs, totals, counts):
             stack  = list(stack_traces.walk(k.value))
             caller = b.ksym(stack[1], show_offset=True)
 
-            if (args.caller and caller.find(args.caller)):
+            if (args.caller and caller.find(args.caller.encode())):
                 continue
 
         avg = totals[k].value / counts[k].value
 
         print("%40s %10lu %6lu %10lu %10lu" % (caller, avg, counts[k].value, maxs[k].value, totals[k].value))
 
-        for addr in stack[1:args.stacks]:
+        for addr in stack[2:args.stacks]:
             print("%40s" %  b.ksym(addr, show_offset=True))
 
 

@@ -57,11 +57,9 @@ Kernel compile flags can usually be checked by looking at `/proc/config.gz` or
 
 ## Ubuntu - Binary
 
-The stable and the nightly packages are built for Ubuntu Xenial (16.04), Ubuntu Artful (17.10) and Ubuntu Bionic (18.04). The steps are very straightforward, no need to upgrade the kernel or compile from source!
-
 **Ubuntu Packages**
 
-As of Ubuntu Bionic (18.04), versions of bcc are available in the standard Ubuntu
+Versions of bcc are available in the standard Ubuntu
 multiverse repository. The Ubuntu packages have slightly different names: where iovisor
 packages use `bcc` in the name (e.g. `bcc-tools`), Ubuntu packages use `bpfcc` (e.g.
 `bpfcc-tools`). Source packages and the binary packages produced from them can be
@@ -70,6 +68,10 @@ found at [packages.ubuntu.com](https://packages.ubuntu.com/search?suite=default&
 ```bash
 sudo apt-get install bpfcc-tools linux-headers-$(uname -r)
 ```
+
+Some of the BCC tools are currently broken due to outdated packages. This is a
+[known bug](https://bugs.launchpad.net/ubuntu/+source/bpfcc/+bug/1848137).
+Therefore [building from source](#ubuntu---source) is currently the only way to get fully working tools.
 
 The tools are installed in `/sbin` (`/usr/sbin` in Ubuntu 18.04) with a `-bpfcc` extension. Try running `sudo opensnoop-bpfcc`.
 
@@ -159,7 +161,7 @@ Upgrade the kernel to minimum 4.3.1-1 first; the ```CONFIG_BPF_SYSCALL=y``` conf
 
 Install these packages using any AUR helper such as [pacaur](https://aur.archlinux.org/packages/pacaur), [yaourt](https://aur.archlinux.org/packages/yaourt), [cower](https://aur.archlinux.org/packages/cower), etc.:
 ```
-bcc bcc-tools python-bcc python2-bcc
+bcc bcc-tools python-bcc
 ```
 All build and install dependencies are listed [in the PKGBUILD](https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?h=bcc) and should install automatically.
 
@@ -325,7 +327,7 @@ To build the toolchain from source, one needs:
 
 ### Install build dependencies
 ```
-# Trusty and older
+# Trusty (14.04 LTS) and older
 VER=trusty
 echo "deb http://llvm.org/apt/$VER/ llvm-toolchain-$VER-3.7 main
 deb-src http://llvm.org/apt/$VER/ llvm-toolchain-$VER-3.7 main" | \
@@ -333,9 +335,13 @@ deb-src http://llvm.org/apt/$VER/ llvm-toolchain-$VER-3.7 main" | \
 wget -O - http://llvm.org/apt/llvm-snapshot.gpg.key | sudo apt-key add -
 sudo apt-get update
 
-# For bionic
+# For Bionic (18.04 LTS)
 sudo apt-get -y install bison build-essential cmake flex git libedit-dev \
   libllvm6.0 llvm-6.0-dev libclang-6.0-dev python zlib1g-dev libelf-dev
+
+# For Eon (19.10)
+sudo apt install -y bison build-essential cmake flex git libedit-dev \
+  libllvm7 llvm-7-dev libclang-7-dev python zlib1g-dev libelf-dev
 
 # For other versions
 sudo apt-get -y install bison build-essential cmake flex git libedit-dev \

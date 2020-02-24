@@ -609,6 +609,29 @@ StatusTuple BPF::unload_func(const std::string& func_name) {
   return StatusTuple(0);
 }
 
+StatusTuple BPF::attach_func(int prog_fd, int attachable_fd,
+                             enum bpf_attach_type attach_type,
+                             uint64_t flags) {
+  int res = bpf_module_->bcc_func_attach(prog_fd, attachable_fd, attach_type, flags);
+  if (res != 0)
+    return StatusTuple(-1, "Can't attach for prog_fd %d, attachable_fd %d, "
+                           "attach_type %d, flags %ld: error %d",
+                       prog_fd, attachable_fd, attach_type, flags, res);
+
+  return StatusTuple(0);
+}
+
+StatusTuple BPF::detach_func(int prog_fd, int attachable_fd,
+                             enum bpf_attach_type attach_type) {
+  int res = bpf_module_->bcc_func_detach(prog_fd, attachable_fd, attach_type);
+  if (res != 0)
+    return StatusTuple(-1, "Can't detach for prog_fd %d, attachable_fd %d, "
+                           "attach_type %d: error %d",
+                       prog_fd, attachable_fd, attach_type, res);
+
+  return StatusTuple(0);
+}
+
 std::string BPF::get_syscall_fnname(const std::string& name) {
   if (syscall_prefix_ == nullptr) {
     KSyms ksym;
@@ -677,6 +700,13 @@ BPFDevmapTable BPF::get_devmap_table(const std::string& name) {
   return BPFDevmapTable({});
 }
 
+BPFXskmapTable BPF::get_xskmap_table(const std::string& name) {
+  TableStorage::iterator it;
+  if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+    return BPFXskmapTable(it->second);
+  return BPFXskmapTable({});
+}
+
 BPFStackTable BPF::get_stack_table(const std::string& name, bool use_debug_file,
                                    bool check_debug_file_crc) {
   TableStorage::iterator it;
@@ -699,6 +729,20 @@ BPFMapInMapTable BPF::get_map_in_map_table(const std::string& name) {
   if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
     return BPFMapInMapTable(it->second);
   return BPFMapInMapTable({});
+}
+
+BPFSockmapTable BPF::get_sockmap_table(const std::string& name) {
+  TableStorage::iterator it;
+  if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+    return BPFSockmapTable(it->second);
+  return BPFSockmapTable({});
+}
+
+BPFSockhashTable BPF::get_sockhash_table(const std::string& name) {
+  TableStorage::iterator it;
+  if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+    return BPFSockhashTable(it->second);
+  return BPFSockhashTable({});
 }
 
 bool BPF::add_module(std::string module)
@@ -777,7 +821,7 @@ USDT::USDT(const std::string& binary_path, const std::string& provider,
       provider_(provider),
       name_(name),
       probe_func_(probe_func),
-      mod_match_inode_only_(0) {}
+      mod_match_inode_only_(1) {}
 
 USDT::USDT(pid_t pid, const std::string& provider, const std::string& name,
            const std::string& probe_func)
@@ -787,7 +831,7 @@ USDT::USDT(pid_t pid, const std::string& provider, const std::string& name,
       provider_(provider),
       name_(name),
       probe_func_(probe_func),
-      mod_match_inode_only_(0) {}
+      mod_match_inode_only_(1) {}
 
 USDT::USDT(const std::string& binary_path, pid_t pid,
            const std::string& provider, const std::string& name,
@@ -798,7 +842,7 @@ USDT::USDT(const std::string& binary_path, pid_t pid,
       provider_(provider),
       name_(name),
       probe_func_(probe_func),
-      mod_match_inode_only_(0) {}
+      mod_match_inode_only_(1) {}
 
 USDT::USDT(const USDT& usdt)
     : initialized_(false),
@@ -854,7 +898,7 @@ StatusTuple USDT::init() {
   for (auto& p : ctx->probes_) {
     if (p->provider_ == provider_ && p->name_ == name_) {
       // Take ownership of the probe that we are interested in, and avoid it
-      // being destrcuted when we destruct the USDT::Context instance
+      // being destructed when we destruct the USDT::Context instance
       probe_ = std::unique_ptr<void, std::function<void(void*)>>(p.release(),
                                                                  deleter);
       p.swap(ctx->probes_.back());

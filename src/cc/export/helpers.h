@@ -40,6 +40,13 @@ R"********(
 #endif
 #define asm_volatile_goto(x...) asm volatile("invalid use of asm_volatile_goto")
 
+/* In 4.18 and later, when CONFIG_FUNCTION_TRACER is defined, kernel Makefile adds
+ * -DCC_USING_FENTRY. Let do the same for bpf programs.
+ */
+#if defined(CONFIG_FUNCTION_TRACER)
+#define CC_USING_FENTRY
+#endif
+
 #include <uapi/linux/bpf.h>
 #include <uapi/linux/if_packet.h>
 #include <linux/version.h>
@@ -105,7 +112,7 @@ BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries); \
 __attribute__((section("maps/export"))) \
 struct _name##_table_t __##_name
 
-// define a table that is shared accross the programs in the same namespace
+// define a table that is shared across the programs in the same namespace
 #define BPF_TABLE_SHARED(_table_type, _key_type, _leaf_type, _name, _max_entries) \
 BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries); \
 __attribute__((section("maps/shared"))) \
@@ -270,11 +277,73 @@ struct _name##_table_t _name = { .max_entries = (_max_entries) }
 #define BPF_CPUMAP(_name, _max_entries) \
   BPF_XDP_REDIRECT_MAP("cpumap", u32, _name, _max_entries)
 
+#define BPF_XSKMAP(_name, _max_entries) \
+struct _name##_table_t { \
+  u32 key; \
+  int leaf; \
+  int * (*lookup) (int *); \
+  /* xdp_act = map.redirect_map(index, flag) */ \
+  u64 (*redirect_map) (int, int); \
+  u32 max_entries; \
+}; \
+__attribute__((section("maps/xskmap"))) \
+struct _name##_table_t _name = { .max_entries = (_max_entries) }
+
 #define BPF_ARRAY_OF_MAPS(_name, _inner_map_name, _max_entries) \
   BPF_TABLE("array_of_maps$" _inner_map_name, int, int, _name, _max_entries)
 
 #define BPF_HASH_OF_MAPS(_name, _inner_map_name, _max_entries) \
   BPF_TABLE("hash_of_maps$" _inner_map_name, int, int, _name, _max_entries)
+
+#define BPF_SK_STORAGE(_name, _leaf_type) \
+struct _name##_table_t { \
+  int key; \
+  _leaf_type leaf; \
+  void * (*sk_storage_get) (void *, void *, int); \
+  int (*sk_storage_delete) (void *); \
+  u32 flags; \
+}; \
+__attribute__((section("maps/sk_storage"))) \
+struct _name##_table_t _name = { .flags = BPF_F_NO_PREALLOC }; \
+BPF_ANNOTATE_KV_PAIR(_name, int, _leaf_type)
+
+#define BPF_SOCKMAP_COMMON(_name, _max_entries, _kind, _helper_name) \
+struct _name##_table_t { \
+  u32 key; \
+  int leaf; \
+  int (*update) (u32 *, int *); \
+  int (*delete) (int *); \
+  /* ret = map.sock_map_update(ctx, key, flag) */ \
+  int (* _helper_name) (void *, void *, u64); \
+  u32 max_entries; \
+}; \
+__attribute__((section("maps/" _kind))) \
+struct _name##_table_t _name = { .max_entries = (_max_entries) }; \
+BPF_ANNOTATE_KV_PAIR(_name, u32, int)
+
+#define BPF_SOCKMAP(_name, _max_entries) \
+  BPF_SOCKMAP_COMMON(_name, _max_entries, "sockmap", sock_map_update)
+
+#define BPF_SOCKHASH(_name, _max_entries) \
+  BPF_SOCKMAP_COMMON(_name, _max_entries, "sockhash", sock_hash_update)
+
+#define BPF_CGROUP_STORAGE_COMMON(_name, _leaf_type, _kind) \
+struct _name##_table_t { \
+  struct bpf_cgroup_storage_key key; \
+  _leaf_type leaf; \
+  _leaf_type * (*lookup) (struct bpf_cgroup_storage_key *); \
+  int (*update) (struct bpf_cgroup_storage_key *, _leaf_type *); \
+  int (*get_local_storage) (u64); \
+}; \
+__attribute__((section("maps/" _kind))) \
+struct _name##_table_t _name = { 0 }; \
+BPF_ANNOTATE_KV_PAIR(_name, struct bpf_cgroup_storage_key, _leaf_type)
+
+#define BPF_CGROUP_STORAGE(_name, _leaf_type) \
+  BPF_CGROUP_STORAGE_COMMON(_name, _leaf_type, "cgroup_storage")
+
+#define BPF_PERCPU_CGROUP_STORAGE(_name, _leaf_type) \
+  BPF_CGROUP_STORAGE_COMMON(_name, _leaf_type, "percpu_cgroup_storage")
 
 // packet parsing state machine helpers
 #define cursor_advance(_cursor, _len) \
