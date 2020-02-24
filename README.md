@@ -80,7 +80,7 @@ pair of .c and .py files, and some are directories of files.
 - examples/tracing/[kvm_hypercall.py](examples/tracing/kvm_hypercall.py): Conditional static kernel tracepoints for KVM entry, exit and hypercall [Examples](examples/tracing/kvm_hypercall.txt).
 
 #### Tools:
-<center><a href="images/bcc_tracing_tools_2017.png"><img src="images/bcc_tracing_tools_2017.png" border=0 width=700></a></center>
+<center><a href="images/bcc_tracing_tools_2019.png"><img src="images/bcc_tracing_tools_2019.png" border=0 width=700></a></center>
 
 
 - tools/[argdist](tools/argdist.py): Display function parameter values as a histogram or frequency count. [Examples](tools/argdist_example.txt).
@@ -118,6 +118,7 @@ pair of .c and .py files, and some are directories of files.
 - tools/[hardirqs](tools/hardirqs.py):  Measure hard IRQ (hard interrupt) event time. [Examples](tools/hardirqs_example.txt).
 - tools/[inject](tools/inject.py): Targeted error injection with call chain and predicates [Examples](tools/inject_example.txt).
 - tools/[killsnoop](tools/killsnoop.py): Trace signals issued by the kill() syscall. [Examples](tools/killsnoop_example.txt).
+- tools/[klockstat](tools/klockstat.py): Traces kernel mutex lock events and display locks statistics. [Examples](tools/klockstat_example.txt).
 - tools/[llcstat](tools/llcstat.py): Summarize CPU cache references and misses by process. [Examples](tools/llcstat_example.txt).
 - tools/[mdflush](tools/mdflush.py): Trace md flush events. [Examples](tools/mdflush_example.txt).
 - tools/[memleak](tools/memleak.py): Display outstanding memory allocations to find memory leaks. [Examples](tools/memleak_example.txt).
@@ -245,7 +246,7 @@ Already pumped up to commit some code? Here are some resources to join the
 discussions in the [IOVisor](https://www.iovisor.org/) community and see
 what you want to work on.
 
-* _Mailing List:_ http://lists.iovisor.org/mailman/listinfo/iovisor-dev
+* _Mailing List:_ https://lists.iovisor.org/mailman/listinfo/iovisor-dev
 * _IRC:_ #iovisor at irc.oftc.net
 * _BCC Issue Tracker:_ [Github Issues](https://github.com/iovisor/bcc/issues)
 * _A guide for contributing scripts:_ [CONTRIBUTING-SCRIPTS.md](CONTRIBUTING-SCRIPTS.md)

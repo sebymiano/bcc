@@ -206,6 +206,13 @@ static struct bpf_helper helpers[] = {
   {"strtoul", "5.2"},
   {"sk_storage_get", "5.2"},
   {"sk_storage_delete", "5.2"},
+  {"send_signal", "5.3"},
+  {"tcp_gen_syncookie", "5.3"},
+  {"skb_output", "5.5"},
+  {"probe_read_user", "5.5"},
+  {"probe_read_kernel", "5.5"},
+  {"probe_read_user_str", "5.5"},
+  {"probe_read_kernel_str", "5.5"},
 };
 
 static uint64_t ptr_to_u64(void *ptr)
@@ -215,7 +222,7 @@ static uint64_t ptr_to_u64(void *ptr)
 
 int bcc_create_map_xattr(struct bpf_create_map_attr *attr, bool allow_rlimit)
 {
-  size_t name_len = attr->name ? strlen(attr->name) : 0;
+  unsigned name_len = attr->name ? strlen(attr->name) : 0;
   char map_name[BPF_OBJ_NAME_LEN] = {};
 
   memcpy(map_name, attr->name, min(name_len, BPF_OBJ_NAME_LEN - 1));
@@ -498,20 +505,13 @@ int bpf_prog_get_tag(int fd, unsigned long long *ptag)
 int bcc_prog_load_xattr(struct bpf_load_program_attr *attr, int prog_len,
                         char *log_buf, unsigned log_buf_size, bool allow_rlimit)
 {
-  size_t name_len = attr->name ? strlen(attr->name) : 0;
+  unsigned name_len = attr->name ? strlen(attr->name) : 0;
   char *tmp_log_buf = NULL, *attr_log_buf = NULL;
   unsigned tmp_log_buf_size = 0, attr_log_buf_size = 0;
   int ret = 0, name_offset = 0;
   char prog_name[BPF_OBJ_NAME_LEN] = {};
 
   unsigned insns_cnt = prog_len / sizeof(struct bpf_insn);
-  if (insns_cnt > BPF_MAXINSNS) {
-    errno = EINVAL;
-    fprintf(stderr,
-            "bpf: %s. Program %s too large (%u insns), at most %d insns\n\n",
-            strerror(errno), attr->name, insns_cnt, BPF_MAXINSNS);
-    return -1;
-  }
   attr->insns_cnt = insns_cnt;
 
   if (attr->log_level > 0) {
@@ -587,6 +587,13 @@ int bcc_prog_load_xattr(struct bpf_load_program_attr *attr, int prog_len,
       if (setrlimit(RLIMIT_MEMLOCK, &rl) == 0)
         ret = bpf_load_program_xattr(attr, attr_log_buf, attr_log_buf_size);
     }
+  }
+
+  if (ret < 0 && errno == E2BIG) {
+    fprintf(stderr,
+            "bpf: %s. Program %s too large (%u insns), at most %d insns\n\n",
+            strerror(errno), attr->name, insns_cnt, BPF_MAXINSNS);
+    return -1;
   }
 
   // The load has failed. Handle log message.
@@ -931,13 +938,16 @@ static void exit_mount_ns(int fd) {
   close(fd);
 }
 
+/* Creates an [uk]probe using debugfs.
+ * On success, the path to the probe is placed in buf (which is assumed to be of size PATH_MAX).
+ */
 static int create_probe_event(char *buf, const char *ev_name,
                               enum bpf_probe_attach_type attach_type,
                               const char *config1, uint64_t offset,
                               const char *event_type, pid_t pid, int maxactive)
 {
   int kfd = -1, res = -1, ns_fd = -1;
-  char ev_alias[128];
+  char ev_alias[256];
   bool is_kprobe = strncmp("kprobe", event_type, 6) == 0;
 
   snprintf(buf, PATH_MAX, "/sys/kernel/debug/tracing/%s_events", event_type);
@@ -1025,7 +1035,10 @@ static int bpf_attach_probe(int progfd, enum bpf_probe_attach_type attach_type,
     // (kernel < 4.12), the event is created under a different name; we need to
     // delete that event and start again without maxactive.
     if (is_kprobe && maxactive > 0 && attach_type == BPF_PROBE_RETURN) {
-      snprintf(fname, sizeof(fname), "%s/id", buf);
+      if (snprintf(fname, sizeof(fname), "%s/id", buf) >= sizeof(fname)) {
+	fprintf(stderr, "filename (%s) is too long for buffer\n", buf);
+	goto error;
+      }
       if (access(fname, F_OK) == -1) {
         // Deleting kprobe event with incorrect name.
         kfd = open("/sys/kernel/debug/tracing/kprobe_events",

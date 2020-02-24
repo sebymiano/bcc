@@ -257,6 +257,7 @@ BPFStackTable::BPFStackTable(const TableDesc& desc, bool use_debug_file,
 
   symbol_option_ = {.use_debug_file = use_debug_file,
                     .check_debug_file_crc = check_debug_file_crc,
+                    .lazy_symbolize = 1,
                     .use_symbol_type = (1 << STT_FUNC) | (1 << STT_GNU_IFUNC)};
 }
 
@@ -327,6 +328,7 @@ BPFStackBuildIdTable::BPFStackBuildIdTable(const TableDesc& desc, bool use_debug
 
   symbol_option_ = {.use_debug_file = use_debug_file,
                     .check_debug_file_crc = check_debug_file_crc,
+                    .lazy_symbolize = 1,
                     .use_symbol_type = (1 << STT_FUNC) | (1 << STT_GNU_IFUNC)};
 }
 
@@ -646,6 +648,27 @@ StatusTuple BPFDevmapTable::get_value(const int& index,
 }
 
 StatusTuple BPFDevmapTable::remove_value(const int& index) {
+    if (!this->remove(const_cast<int*>(&index)))
+      return StatusTuple(-1, "Error removing value: %s", std::strerror(errno));
+    return StatusTuple(0);
+}
+
+BPFMapInMapTable::BPFMapInMapTable(const TableDesc& desc)
+    : BPFTableBase<int, int>(desc) {
+    if(desc.type != BPF_MAP_TYPE_ARRAY_OF_MAPS &&
+       desc.type != BPF_MAP_TYPE_HASH_OF_MAPS)
+      throw std::invalid_argument("Table '" + desc.name +
+                                  "' is not a map-in-map table");
+}
+
+StatusTuple BPFMapInMapTable::update_value(const int& index,
+                                           const int& inner_map_fd) {
+    if (!this->update(const_cast<int*>(&index), const_cast<int*>(&inner_map_fd)))
+      return StatusTuple(-1, "Error updating value: %s", std::strerror(errno));
+    return StatusTuple(0);
+}
+
+StatusTuple BPFMapInMapTable::remove_value(const int& index) {
     if (!this->remove(const_cast<int*>(&index)))
       return StatusTuple(-1, "Error removing value: %s", std::strerror(errno));
     return StatusTuple(0);

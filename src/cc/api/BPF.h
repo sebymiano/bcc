@@ -59,6 +59,8 @@ class BPF {
                    const std::vector<std::string>& cflags = {},
                    const std::vector<USDT>& usdt = {});
 
+  StatusTuple init_usdt(const USDT& usdt);
+
   ~BPF();
   StatusTuple detach_all();
 
@@ -76,11 +78,13 @@ class BPF {
                             const std::string& probe_func,
                             uint64_t symbol_addr = 0,
                             bpf_probe_attach_type attach_type = BPF_PROBE_ENTRY,
-                            pid_t pid = -1);
+                            pid_t pid = -1,
+                            uint64_t symbol_offset = 0);
   StatusTuple detach_uprobe(const std::string& binary_path,
                             const std::string& symbol, uint64_t symbol_addr = 0,
                             bpf_probe_attach_type attach_type = BPF_PROBE_ENTRY,
-                            pid_t pid = -1);
+                            pid_t pid = -1,
+                            uint64_t symbol_offset = 0);
   StatusTuple attach_usdt(const USDT& usdt, pid_t pid = -1);
   StatusTuple detach_usdt(const USDT& usdt, pid_t pid = -1);
 
@@ -164,6 +168,8 @@ class BPF {
                                               bool use_debug_file = true,
                                               bool check_debug_file_crc = true);
 
+  BPFMapInMapTable get_map_in_map_table(const std::string& name);
+
   bool add_module(std::string module);
 
   StatusTuple open_perf_event(const std::string& name, uint32_t type,
@@ -240,7 +246,10 @@ class BPF {
   StatusTuple check_binary_symbol(const std::string& binary_path,
                                   const std::string& symbol,
                                   uint64_t symbol_addr, std::string& module_res,
-                                  uint64_t& offset_res);
+                                  uint64_t& offset_res,
+                                  uint64_t symbol_offset = 0);
+
+  void init_fail_reset();
 
   int flag_;
 
@@ -253,6 +262,7 @@ class BPF {
   std::map<std::string, int> funcs_;
 
   std::vector<USDT> usdt_;
+  std::string all_bpf_program_;
 
   std::map<std::string, open_probe_t> kprobes_;
   std::map<std::string, open_probe_t> uprobes_;
@@ -288,6 +298,19 @@ class USDT {
                << usdt.probe_func_;
   }
 
+  // When the kludge flag is set to 1, we will only match on inode
+  // when searching for modules in /proc/PID/maps that might contain the
+  // tracepoint we're looking for. Normally match is on inode and
+  // (dev_major, dev_minor), which is a more accurate way to uniquely
+  // identify a file.
+  //
+  // This hack exists because btrfs reports different device numbers for files
+  // in /proc/PID/maps vs stat syscall. Don't use it unless you're using btrfs
+  //
+  // set_probe_matching_kludge(1) must be called before USDTs are submitted to
+  // BPF::init()
+  int set_probe_matching_kludge(uint8_t kludge);
+
  private:
   bool initialized_;
 
@@ -300,6 +323,8 @@ class USDT {
 
   std::unique_ptr<void, std::function<void(void*)>> probe_;
   std::string program_text_;
+
+  uint8_t mod_match_inode_only_;
 
   friend class BPF;
 };

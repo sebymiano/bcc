@@ -105,6 +105,24 @@ sudo apt-get install bcc-tools libbcc-examples linux-headers-$(uname -r)
 
 ## Fedora - Binary
 
+### Fedora 30 and newer
+
+As of Fedora 30, bcc binaries are available in the standard repository.
+You can install them via
+
+```bash
+sudo dnf install bcc
+```
+
+**Note**: if you keep getting `Failed to load program: Operation not permitted` when
+trying to run the `hello_world.py` example as root then you might need to lift
+the so-called kernel lockdown (cf. 
+[FAQ](https://github.com/iovisor/bcc/blob/c00d10d4552f647491395e326d2e4400f3a0b6c5/FAQ.txt#L24),
+[background article](https://gehrcke.de/2019/09/running-an-ebpf-program-may-require-lifting-the-kernel-lockdown)).
+
+
+### Fedora 29 and older
+
 Ensure that you are running a 4.2+ kernel with `uname -r`. If not, install a 4.2+ kernel from
 http://alt.fedoraproject.org/pub/alt/rawhide-kernel-nodebug, for example:
 
@@ -202,6 +220,16 @@ sudo yum install bcc
 ```
 
 # Source
+
+## libbpf Submodule
+
+Since release v0.10.0, bcc starts to leverage libbpf repo (https://github.com/libbpf/libbpf)
+to provide wrapper functions to the kernel for bpf syscalls, uapi headers bpf.h/btf.h etc.
+Unfortunately, the default github release source code does not contain libbpf submodule
+source code and this will cause build issues.
+
+To alleviate this problem, starting at release v0.11.0, source code with corresponding
+libbpf submodule codes will be released as well. See https://github.com/iovisor/bcc/releases.
 
 ## Debian - Source
 ### Jessie
@@ -402,11 +430,13 @@ For Centos 7.6 only
 sudo yum install -y epel-release
 sudo yum update -y
 sudo yum groupinstall -y "Development tools"
-sudo yum install -y elfutils-libelf-devel cmake3
+sudo yum install -y elfutils-libelf-devel cmake3 git bison flex ncurses-devel
 sudo yum install -y luajit luajit-devel  # for Lua support
 ```
 
 ### Install and compile LLVM
+
+You could compile LLVM from source code
 
 ```
 curl  -LO  http://releases.llvm.org/7.0.1/llvm-7.0.1.src.tar.xz
@@ -430,6 +460,17 @@ make
 sudo make install
 cd ..
 ```
+
+or install from centos-release-scl
+
+```
+yum install -y centos-release-scl
+yum-config-manager --enable rhel-server-rhscl-7-rpms
+yum install -y devtoolset-7 llvm-toolset-7 llvm-toolset-7-llvm-devel llvm-toolset-7-llvm-static llvm-toolset-7-clang-devel
+source scl_source enable devtoolset-7 llvm-toolset-7
+```
+
+For permanently enable scl environment, please check https://access.redhat.com/solutions/527703.
 
 ### Install and compile BCC
 
@@ -491,12 +532,12 @@ sudo /usr/share/bcc/tools/execsnoop
 ## Build LLVM and Clang development libs
 
 ```
-git clone http://llvm.org/git/llvm.git
-cd llvm/tools; git clone http://llvm.org/git/clang.git
-cd ..; mkdir -p build/install; cd build
-cmake -G "Unix Makefiles" -DLLVM_TARGETS_TO_BUILD="BPF;X86" \
+git clone https://github.com/llvm/llvm-project.git
+mkdir -p llvm-project/llvm/build/install
+cd llvm-project/llvm/build
+cmake -G "Ninja" -DLLVM_TARGETS_TO_BUILD="BPF;X86" \
+  -DLLVM_ENABLE_PROJECTS="clang" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/install ..
-make
-make install
+ninja && ninja install
 export PATH=$PWD/install/bin:$PATH
 ```
