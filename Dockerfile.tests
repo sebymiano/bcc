@@ -1,7 +1,7 @@
 # Using ubuntu 19.04 for newer `unshare` command used in tests
 FROM ubuntu:19.04
 
-ARG LLVM_VERSION="9"
+ARG LLVM_VERSION="8"
 ENV LLVM_VERSION=$LLVM_VERSION
 
 RUN apt-get update && apt-get install -y curl gnupg &&\
