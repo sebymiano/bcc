@@ -71,6 +71,15 @@ R"********(
         __attribute__ ((section(".maps." #name), used))	\
                 ____btf_map_##name = { }
 
+// Associate map with its key/value types
+#define BPF_ANNOTATE_KV_PAIR_QUEUESTACK(name, type_val)  \
+        struct ____btf_map_##name {     \
+                type_val value;       \
+        };            \
+        struct ____btf_map_##name     \
+        __attribute__ ((section(".maps." #name), used)) \
+                ____btf_map_##name = { }
+
 // Changes to the macro require changes in BFrontendAction classes
 #define BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, _flags) \
 struct _name##_table_t { \
@@ -92,6 +101,28 @@ struct _name##_table_t { \
 __attribute__((section("maps/" _table_type))) \
 struct _name##_table_t _name = { .flags = (_flags), .max_entries = (_max_entries) }; \
 BPF_ANNOTATE_KV_PAIR(_name, _key_type, _leaf_type)
+
+// Changes to the macro require changes in BFrontendAction classes
+#define BPF_QUEUESTACK(_table_type, _name, _leaf_type, _max_entries, _flags) \
+struct _name##_table_t { \
+  _leaf_type leaf; \
+  int * (*peek) (_leaf_type *); \
+  int * (*pop) (_leaf_type *); \
+  int * (*push) (_leaf_type *, u64); \
+  u32 max_entries; \
+  int flags; \
+}; \
+__attribute__((section("maps/" _table_type))) \
+struct _name##_table_t _name = { .flags = (_flags), .max_entries = (_max_entries) }; \
+BPF_ANNOTATE_KV_PAIR_QUEUESTACK(_name, _leaf_type)
+
+// Changes to the macro require changes in BFrontendAction classes
+#define BPF_QUEUE(_name, _leaf_type, _max_entries, _flags) \
+BPF_QUEUESTACK("queue", _name, _leaf_type, _max_entries, 0)
+
+// Changes to the macro require changes in BFrontendAction classes
+#define BPF_STACK(_name, _leaf_type, _max_entries, _flags) \
+BPF_QUEUESTACK("stack", _name, _leaf_type, _max_entries, 0)
 
 #define BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries) \
 BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, 0)
