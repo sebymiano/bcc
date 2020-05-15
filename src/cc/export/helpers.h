@@ -40,6 +40,13 @@ R"********(
 #endif
 #define asm_volatile_goto(x...) asm volatile("invalid use of asm_volatile_goto")
 
+/* In 4.18 and later, when CONFIG_FUNCTION_TRACER is defined, kernel Makefile adds
+ * -DCC_USING_FENTRY. Let do the same for bpf programs.
+ */
+#if defined(CONFIG_FUNCTION_TRACER)
+#define CC_USING_FENTRY
+#endif
+
 #include <uapi/linux/bpf.h>
 #include <uapi/linux/if_packet.h>
 #include <linux/version.h>
@@ -105,7 +112,7 @@ BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries); \
 __attribute__((section("maps/export"))) \
 struct _name##_table_t __##_name
 
-// define a table that is shared accross the programs in the same namespace
+// define a table that is shared across the programs in the same namespace
 #define BPF_TABLE_SHARED(_table_type, _key_type, _leaf_type, _name, _max_entries) \
 BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries); \
 __attribute__((section("maps/shared"))) \
@@ -270,11 +277,73 @@ struct _name##_table_t _name = { .max_entries = (_max_entries) }
 #define BPF_CPUMAP(_name, _max_entries) \
   BPF_XDP_REDIRECT_MAP("cpumap", u32, _name, _max_entries)
 
+#define BPF_XSKMAP(_name, _max_entries) \
+struct _name##_table_t { \
+  u32 key; \
+  int leaf; \
+  int * (*lookup) (int *); \
+  /* xdp_act = map.redirect_map(index, flag) */ \
+  u64 (*redirect_map) (int, int); \
+  u32 max_entries; \
+}; \
+__attribute__((section("maps/xskmap"))) \
+struct _name##_table_t _name = { .max_entries = (_max_entries) }
+
 #define BPF_ARRAY_OF_MAPS(_name, _inner_map_name, _max_entries) \
   BPF_TABLE("array_of_maps$" _inner_map_name, int, int, _name, _max_entries)
 
 #define BPF_HASH_OF_MAPS(_name, _inner_map_name, _max_entries) \
   BPF_TABLE("hash_of_maps$" _inner_map_name, int, int, _name, _max_entries)
+
+#define BPF_SK_STORAGE(_name, _leaf_type) \
+struct _name##_table_t { \
+  int key; \
+  _leaf_type leaf; \
+  void * (*sk_storage_get) (void *, void *, int); \
+  int (*sk_storage_delete) (void *); \
+  u32 flags; \
+}; \
+__attribute__((section("maps/sk_storage"))) \
+struct _name##_table_t _name = { .flags = BPF_F_NO_PREALLOC }; \
+BPF_ANNOTATE_KV_PAIR(_name, int, _leaf_type)
+
+#define BPF_SOCKMAP_COMMON(_name, _max_entries, _kind, _helper_name) \
+struct _name##_table_t { \
+  u32 key; \
+  int leaf; \
+  int (*update) (u32 *, int *); \
+  int (*delete) (int *); \
+  /* ret = map.sock_map_update(ctx, key, flag) */ \
+  int (* _helper_name) (void *, void *, u64); \
+  u32 max_entries; \
+}; \
+__attribute__((section("maps/" _kind))) \
+struct _name##_table_t _name = { .max_entries = (_max_entries) }; \
+BPF_ANNOTATE_KV_PAIR(_name, u32, int)
+
+#define BPF_SOCKMAP(_name, _max_entries) \
+  BPF_SOCKMAP_COMMON(_name, _max_entries, "sockmap", sock_map_update)
+
+#define BPF_SOCKHASH(_name, _max_entries) \
+  BPF_SOCKMAP_COMMON(_name, _max_entries, "sockhash", sock_hash_update)
+
+#define BPF_CGROUP_STORAGE_COMMON(_name, _leaf_type, _kind) \
+struct _name##_table_t { \
+  struct bpf_cgroup_storage_key key; \
+  _leaf_type leaf; \
+  _leaf_type * (*lookup) (struct bpf_cgroup_storage_key *); \
+  int (*update) (struct bpf_cgroup_storage_key *, _leaf_type *); \
+  int (*get_local_storage) (u64); \
+}; \
+__attribute__((section("maps/" _kind))) \
+struct _name##_table_t _name = { 0 }; \
+BPF_ANNOTATE_KV_PAIR(_name, struct bpf_cgroup_storage_key, _leaf_type)
+
+#define BPF_CGROUP_STORAGE(_name, _leaf_type) \
+  BPF_CGROUP_STORAGE_COMMON(_name, _leaf_type, "cgroup_storage")
+
+#define BPF_PERCPU_CGROUP_STORAGE(_name, _leaf_type) \
+  BPF_CGROUP_STORAGE_COMMON(_name, _leaf_type, "percpu_cgroup_storage")
 
 // packet parsing state machine helpers
 #define cursor_advance(_cursor, _len) \
@@ -546,11 +615,36 @@ static int (*bpf_probe_read_user_str)(void *dst, __u32 size,
 static int (*bpf_probe_read_kernel_str)(void *dst, __u32 size,
             const void *unsafe_ptr) =
   (void *)BPF_FUNC_probe_read_kernel_str;
+static int (*bpf_tcp_send_ack)(void *tp, __u32 rcv_nxt) =
+  (void *)BPF_FUNC_tcp_send_ack;
+static int (*bpf_send_signal_thread)(__u32 sig) =
+  (void *)BPF_FUNC_send_signal_thread;
+static __u64 (*bpf_jiffies64)(void) = (void *)BPF_FUNC_jiffies64;
+
+struct bpf_perf_event_data;
+static int (*bpf_read_branch_records)(struct bpf_perf_event_data *ctx, void *buf,
+                                      __u32 size, __u64 flags) =
+  (void *)BPF_FUNC_read_branch_records;
+static int (*bpf_get_ns_current_pid_tgid)(__u64 dev, __u64 ino,
+                                          struct bpf_pidns_info *nsdata,
+                                          __u32 size) =
+  (void *)BPF_FUNC_get_ns_current_pid_tgid;
+
+struct bpf_map;
+static int (*bpf_xdp_output)(void *ctx, struct bpf_map *map, __u64 flags,
+                             void *data, __u64 size) =
+  (void *)BPF_FUNC_xdp_output;
+static __u64 (*bpf_get_netns_cookie)(void *ctx) = (void *)BPF_FUNC_get_netns_cookie;
+static __u64 (*bpf_get_current_ancestor_cgroup_id)(int ancestor_level) =
+  (void *)BPF_FUNC_get_current_ancestor_cgroup_id;
+
+struct sk_buff;
+static int (*bpf_sk_assign)(struct sk_buff *skb, struct bpf_sock *sk, __u64 flags) =
+  (void *)BPF_FUNC_sk_assign;
 
 /* llvm builtin functions that eBPF C program may use to
  * emit BPF_LD_ABS and BPF_LD_IND instructions
  */
-struct sk_buff;
 unsigned long long load_byte(void *skb,
   unsigned long long off) asm("llvm.bpf.load.byte");
 unsigned long long load_half(void *skb,
@@ -876,6 +970,51 @@ int tracepoint__##category##__##event(struct tracepoint__##category##__##event *
 
 #define RAW_TRACEPOINT_PROBE(event) \
 int raw_tracepoint__##event(struct bpf_raw_tracepoint_args *ctx)
+
+/* BPF_PROG macro allows to define trampoline function,
+ * borrowed from kernel bpf selftest code.
+ */
+#define ___bpf_concat(a, b) a ## b
+#define ___bpf_apply(fn, n) ___bpf_concat(fn, n)
+#define ___bpf_nth(_, _1, _2, _3, _4, _5, _6, _7, _8, _9, _a, _b, _c, N, ...) N
+#define ___bpf_narg(...) \
+        ___bpf_nth(_, ##__VA_ARGS__, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+#define ___bpf_ctx_cast0() ctx
+#define ___bpf_ctx_cast1(x) ___bpf_ctx_cast0(), (void *)ctx[0]
+#define ___bpf_ctx_cast2(x, args...) ___bpf_ctx_cast1(args), (void *)ctx[1]
+#define ___bpf_ctx_cast3(x, args...) ___bpf_ctx_cast2(args), (void *)ctx[2]
+#define ___bpf_ctx_cast4(x, args...) ___bpf_ctx_cast3(args), (void *)ctx[3]
+#define ___bpf_ctx_cast5(x, args...) ___bpf_ctx_cast4(args), (void *)ctx[4]
+#define ___bpf_ctx_cast6(x, args...) ___bpf_ctx_cast5(args), (void *)ctx[5]
+#define ___bpf_ctx_cast7(x, args...) ___bpf_ctx_cast6(args), (void *)ctx[6]
+#define ___bpf_ctx_cast8(x, args...) ___bpf_ctx_cast7(args), (void *)ctx[7]
+#define ___bpf_ctx_cast9(x, args...) ___bpf_ctx_cast8(args), (void *)ctx[8]
+#define ___bpf_ctx_cast10(x, args...) ___bpf_ctx_cast9(args), (void *)ctx[9]
+#define ___bpf_ctx_cast11(x, args...) ___bpf_ctx_cast10(args), (void *)ctx[10]
+#define ___bpf_ctx_cast12(x, args...) ___bpf_ctx_cast11(args), (void *)ctx[11]
+#define ___bpf_ctx_cast(args...) \
+        ___bpf_apply(___bpf_ctx_cast, ___bpf_narg(args))(args)
+
+#define BPF_PROG(name, args...)                                 \
+int name(unsigned long long *ctx);                              \
+__attribute__((always_inline))                                  \
+static void ____##name(unsigned long long *ctx, ##args);        \
+int name(unsigned long long *ctx)                               \
+{                                                               \
+        _Pragma("GCC diagnostic push")                          \
+        _Pragma("GCC diagnostic ignored \"-Wint-conversion\"")  \
+        ____##name(___bpf_ctx_cast(args));                      \
+        _Pragma("GCC diagnostic pop")                           \
+        return 0;                                               \
+}                                                               \
+static void ____##name(unsigned long long *ctx, ##args)
+
+#define KFUNC_PROBE(event, args...) \
+        BPF_PROG(kfunc__ ## event, args)
+
+#define KRETFUNC_PROBE(event, args...) \
+        BPF_PROG(kretfunc__ ## event, args)
 
 #define TP_DATA_LOC_READ_CONST(dst, field, length)                        \
         do {                                                              \

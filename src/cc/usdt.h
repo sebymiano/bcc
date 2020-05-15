@@ -102,6 +102,8 @@ class ArgumentParser {
   }
   bool error_return(ssize_t error_start, ssize_t skip_start) {
     print_error(error_start);
+    if (isspace(arg_[skip_start]))
+        skip_start++;  // Make sure we skip at least one character
     skip_until_whitespace_from(skip_start);
     return false;
   }
@@ -115,9 +117,9 @@ class ArgumentParser {
 
 class ArgumentParser_aarch64 : public ArgumentParser {
  private:
-  bool parse_register(ssize_t pos, ssize_t &new_pos, optional<int> *reg_num);
+  bool parse_register(ssize_t pos, ssize_t &new_pos, std::string &reg_name);
   bool parse_size(ssize_t pos, ssize_t &new_pos, optional<int> *arg_size);
-  bool parse_mem(ssize_t pos, ssize_t &new_pos, optional<int> *reg_num,
+  bool parse_mem(ssize_t pos, ssize_t &new_pos, std::string &reg_name,
                  optional<int> *offset);
 
  public:
@@ -212,7 +214,7 @@ class Probe {
 
 public:
   Probe(const char *bin_path, const char *provider, const char *name,
-        uint64_t semaphore, const optional<int> &pid, uint8_t mod_match_inode_only = 0);
+        uint64_t semaphore, const optional<int> &pid, uint8_t mod_match_inode_only = 1);
 
   size_t num_locations() const { return locations_.size(); }
   size_t num_arguments() const { return locations_.front().arguments_.size(); }
@@ -265,10 +267,10 @@ private:
   uint8_t mod_match_inode_only_;
 
 public:
-  Context(const std::string &bin_path, uint8_t mod_match_inode_only = 0);
-  Context(int pid, uint8_t mod_match_inode_only = 0);
+  Context(const std::string &bin_path, uint8_t mod_match_inode_only = 1);
+  Context(int pid, uint8_t mod_match_inode_only = 1);
   Context(int pid, const std::string &bin_path,
-          uint8_t mod_match_inode_only = 0);
+          uint8_t mod_match_inode_only = 1);
   ~Context();
 
   optional<int> pid() const { return pid_; }

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
 from collections import MutableMapping
 import ctypes as ct
 from functools import reduce
@@ -19,6 +20,7 @@ import multiprocessing
 import os
 import errno
 import re
+import sys
 
 from .libbcc import lib, _RAW_CB_TYPE, _LOST_CB_TYPE
 from .perf import Perf
@@ -182,6 +184,8 @@ def Table(bpf, map_id, map_fd, keytype, leaftype, name, **kwargs):
         t = DevMap(bpf, map_id, map_fd, keytype, leaftype)
     elif ttype == BPF_MAP_TYPE_CPUMAP:
         t = CpuMap(bpf, map_id, map_fd, keytype, leaftype)
+    elif ttype == BPF_MAP_TYPE_XSKMAP:
+        t = XskMap(bpf, map_id, map_fd, keytype, leaftype)
     elif ttype == BPF_MAP_TYPE_ARRAY_OF_MAPS:
         t = MapInMapArray(bpf, map_id, map_fd, keytype, leaftype)
     elif ttype == BPF_MAP_TYPE_HASH_OF_MAPS:
@@ -643,9 +647,11 @@ class PerfEventArray(ArrayBase):
                 else:
                     fields.append((field_name, ct_mapping[field_type]))
             except KeyError:
+                # Using print+sys.exit instead of raising exceptions,
+                # because exceptions are caught by the caller.
                 print("Type: '%s' not recognized. Please define the data with ctypes manually."
-                      % field_type)
-                exit()
+                      % field_type, file=sys.stderr)
+                sys.exit(1)
             i += 1
         return type('', (ct.Structure,), {'_fields_': fields})
 
@@ -904,6 +910,10 @@ class DevMap(ArrayBase):
 class CpuMap(ArrayBase):
     def __init__(self, *args, **kwargs):
         super(CpuMap, self).__init__(*args, **kwargs)
+
+class XskMap(ArrayBase):
+    def __init__(self, *args, **kwargs):
+        super(XskMap, self).__init__(*args, **kwargs)
 
 class MapInMapArray(ArrayBase):
     def __init__(self, *args, **kwargs):

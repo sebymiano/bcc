@@ -57,7 +57,7 @@ def positive_nonzero_int(val):
     return ival
 
 def stack_id_err(stack_id):
-    # -EFAULT in get_stackid normally means the stack-trace is not availible,
+    # -EFAULT in get_stackid normally means the stack-trace is not available,
     # Such as getting kernel stack trace in userspace code
     return (stack_id < 0) and (stack_id != -errno.EFAULT)
 
@@ -72,6 +72,7 @@ examples = """examples:
     ./profile -L 185      # only profile thread with TID 185
     ./profile -U          # only show user space stacks (no kernel)
     ./profile -K          # only show kernel space stacks (no user)
+    ./profile --cgroupmap ./mappath  # only trace cgroups in this BPF map
 """
 parser = argparse.ArgumentParser(
     description="Profile CPU stack traces at a timed interval",
@@ -112,6 +113,8 @@ parser.add_argument("-C", "--cpu", type=int, default=-1,
     help="cpu number to run profile on")
 parser.add_argument("--ebpf", action="store_true",
     help=argparse.SUPPRESS)
+parser.add_argument("--cgroupmap",
+    help="trace cgroups in this BPF map only")
 
 # option logic
 args = parser.parse_args()
@@ -143,6 +146,10 @@ struct key_t {
 BPF_HASH(counts, struct key_t);
 BPF_STACK_TRACE(stack_traces, STACK_STORAGE_SIZE);
 
+#if CGROUPSET
+BPF_TABLE_PINNED("hash", u64, u64, cgroupset, 1024, "CGROUPPATH");
+#endif
+
 // This code gets a bit complex. Probably not suitable for casual hacking.
 
 int do_perf_event(struct bpf_perf_event_data *ctx) {
@@ -155,6 +162,13 @@ int do_perf_event(struct bpf_perf_event_data *ctx) {
 
     if (!(THREAD_FILTER))
         return 0;
+
+#if CGROUPSET
+    u64 cgroupid = bpf_get_current_cgroup_id();
+    if (cgroupset.lookup(&cgroupid) == NULL) {
+        return 0;
+    }
+#endif
 
     // create map key
     struct key_t key = {.pid = tgid};
@@ -232,6 +246,11 @@ else:
     stack_context = "user + kernel"
 bpf_text = bpf_text.replace('USER_STACK_GET', user_stack_get)
 bpf_text = bpf_text.replace('KERNEL_STACK_GET', kernel_stack_get)
+if args.cgroupmap:
+    bpf_text = bpf_text.replace('CGROUPSET', '1')
+    bpf_text = bpf_text.replace('CGROUPPATH', args.cgroupmap)
+else:
+    bpf_text = bpf_text.replace('CGROUPSET', '0')
 
 sample_freq = 0
 sample_period = 0
@@ -296,8 +315,6 @@ missing_stacks = 0
 has_enomem = False
 counts = b.get_table("counts")
 stack_traces = b.get_table("stack_traces")
-need_delimiter = args.delimited and not (args.kernel_stacks_only or
-                                         args.user_stacks_only)
 for k, v in sorted(counts.items(), key=lambda counts: counts[1].value):
     # handle get_stackid errors
     if not args.user_stacks_only and stack_id_err(k.kernel_stack_id):
@@ -330,13 +347,13 @@ for k, v in sorted(counts.items(), key=lambda counts: counts[1].value):
         # hash collision (-EEXIST), we still print a placeholder for consistency
         if not args.kernel_stacks_only:
             if stack_id_err(k.user_stack_id):
-                line.append("[Missed User Stack]")
+                line.append(b"[Missed User Stack]")
             else:
                 line.extend([b.sym(addr, k.pid) for addr in reversed(user_stack)])
         if not args.user_stacks_only:
-            line.extend(["-"] if (need_delimiter and k.kernel_stack_id >= 0 and k.user_stack_id >= 0) else [])
+            line.extend([b"-"] if (need_delimiter and k.kernel_stack_id >= 0 and k.user_stack_id >= 0) else [])
             if stack_id_err(k.kernel_stack_id):
-                line.append("[Missed Kernel Stack]")
+                line.append(b"[Missed Kernel Stack]")
             else:
                 line.extend([aksym(addr) for addr in reversed(kernel_stack)])
         print("%s %d" % (b";".join(line).decode('utf-8', 'replace'), v.value))

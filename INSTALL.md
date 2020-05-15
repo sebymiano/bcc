@@ -9,6 +9,7 @@
   - [openSUSE](#opensuse---binary)
   - [RHEL](#rhel---binary)
   - [Amazon Linux 1](#Amazon-Linux-1---Binary)
+  - [Amazon Linux 2](#Amazon-Linux-2---Binary)
 * [Source](#source)
   - [Debian](#debian---source)
   - [Ubuntu](#ubuntu---source)
@@ -57,14 +58,18 @@ Kernel compile flags can usually be checked by looking at `/proc/config.gz` or
 
 ## Ubuntu - Binary
 
-The stable and the nightly packages are built for Ubuntu Xenial (16.04), Ubuntu Artful (17.10) and Ubuntu Bionic (18.04). The steps are very straightforward, no need to upgrade the kernel or compile from source!
+Versions of bcc are available in the standard Ubuntu
+Universe repository, as well in iovisor's PPA. The Ubuntu packages have slightly different names: where iovisor
+packages use `bcc` in the name (e.g. `bcc-tools`), Ubuntu packages use `bpfcc` (e.g.
+`bpfcc-tools`).
+
+Currently, BCC packages for both the Ubuntu Universe, and the iovisor builds are outdated. This is a known and tracked in:
+- [Universe - Ubuntu Launchpad](https://bugs.launchpad.net/ubuntu/+source/bpfcc/+bug/1848137)
+- [iovisor - BCC GitHub Issues](https://github.com/iovisor/bcc/issues/2678)
+Curently, [building from source](#ubuntu---source) is currently the only way to get up to date packaged version of bcc.
 
 **Ubuntu Packages**
-
-As of Ubuntu Bionic (18.04), versions of bcc are available in the standard Ubuntu
-multiverse repository. The Ubuntu packages have slightly different names: where iovisor
-packages use `bcc` in the name (e.g. `bcc-tools`), Ubuntu packages use `bpfcc` (e.g.
-`bpfcc-tools`). Source packages and the binary packages produced from them can be
+Source packages and the binary packages produced from them can be
 found at [packages.ubuntu.com](https://packages.ubuntu.com/search?suite=default&section=all&arch=any&keywords=bpfcc&searchon=sourcenames).
 
 ```bash
@@ -84,7 +89,7 @@ which declares a dependency on `libbpfcc` while the upstream `libbcc` package is
 `foo` should install without trouble as `libbcc` declares that it provides `libbpfcc`.
 That said, one should always test such a configuration in case of version incompatibilities.
 
-**Upstream Stable and Signed Packages**
+**iovisor packages (Upstream Stable and Signed Packages)**
 
 ```bash
 sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 4052245BD4284CDD
@@ -116,7 +121,7 @@ sudo dnf install bcc
 
 **Note**: if you keep getting `Failed to load program: Operation not permitted` when
 trying to run the `hello_world.py` example as root then you might need to lift
-the so-called kernel lockdown (cf. 
+the so-called kernel lockdown (cf.
 [FAQ](https://github.com/iovisor/bcc/blob/c00d10d4552f647491395e326d2e4400f3a0b6c5/FAQ.txt#L24),
 [background article](https://gehrcke.de/2019/09/running-an-ebpf-program-may-require-lifting-the-kernel-lockdown)).
 
@@ -159,7 +164,7 @@ Upgrade the kernel to minimum 4.3.1-1 first; the ```CONFIG_BPF_SYSCALL=y``` conf
 
 Install these packages using any AUR helper such as [pacaur](https://aur.archlinux.org/packages/pacaur), [yaourt](https://aur.archlinux.org/packages/yaourt), [cower](https://aur.archlinux.org/packages/cower), etc.:
 ```
-bcc bcc-tools python-bcc python2-bcc
+bcc bcc-tools python-bcc
 ```
 All build and install dependencies are listed [in the PKGBUILD](https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?h=bcc) and should install automatically.
 
@@ -216,6 +221,15 @@ Use case 2. Install BCC for your AMI's default kernel (no reboot required):
 ```
 sudo yum install kernel-headers-$(uname -r | cut -d'.' -f1-5)
 sudo yum install kernel-devel-$(uname -r | cut -d'.' -f1-5)
+sudo yum install bcc
+```
+
+## Amazon Linux 2 - Binary
+Use case 1. Install BCC for your AMI's default kernel (no reboot required):
+   Tested on Amazon Linux AMI release 2020.03 (kernel 4.14.154-128.181.amzn2.x86_64)
+```
+sudo amazon-linux-extras enable BCC
+sudo yum install kernel-devel-$(uname -r)
 sudo yum install bcc
 ```
 
@@ -325,7 +339,7 @@ To build the toolchain from source, one needs:
 
 ### Install build dependencies
 ```
-# Trusty and older
+# Trusty (14.04 LTS) and older
 VER=trusty
 echo "deb http://llvm.org/apt/$VER/ llvm-toolchain-$VER-3.7 main
 deb-src http://llvm.org/apt/$VER/ llvm-toolchain-$VER-3.7 main" | \
@@ -333,9 +347,13 @@ deb-src http://llvm.org/apt/$VER/ llvm-toolchain-$VER-3.7 main" | \
 wget -O - http://llvm.org/apt/llvm-snapshot.gpg.key | sudo apt-key add -
 sudo apt-get update
 
-# For bionic
+# For Bionic (18.04 LTS)
 sudo apt-get -y install bison build-essential cmake flex git libedit-dev \
   libllvm6.0 llvm-6.0-dev libclang-6.0-dev python zlib1g-dev libelf-dev
+
+# For Eon (19.10)
+sudo apt install -y bison build-essential cmake flex git libedit-dev \
+  libllvm7 llvm-7-dev libclang-7-dev python zlib1g-dev libelf-dev
 
 # For other versions
 sudo apt-get -y install bison build-essential cmake flex git libedit-dev \
@@ -346,12 +364,18 @@ sudo apt-get -y install luajit luajit-5.1-dev
 ```
 
 ### Install and compile BCC
+
 ```
 git clone https://github.com/iovisor/bcc.git
 mkdir bcc/build; cd bcc/build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr
+cmake ..
 make
 sudo make install
+cmake -DPYTHON_CMD=python3 .. # build python3 binding
+pushd src/python/
+make
+sudo make install
+popd
 ```
 
 ## Fedora - Source
@@ -387,7 +411,7 @@ sudo dnf install -y clang clang-devel llvm llvm-devel llvm-static ncurses-devel
 ```
 git clone https://github.com/iovisor/bcc.git
 mkdir bcc/build; cd bcc/build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr
+cmake ..
 make
 sudo make install
 ```
@@ -408,8 +432,7 @@ sudo zypper in lua51-luajit-devel # for lua support in openSUSE Tumbleweed
 ```
 git clone https://github.com/iovisor/bcc.git
 mkdir bcc/build; cd bcc/build
-cmake -DCMAKE_INSTALL_PREFIX=/usr \
-      -DLUAJIT_INCLUDE_DIR=`pkg-config --variable=includedir luajit` \ # for lua support
+cmake -DLUAJIT_INCLUDE_DIR=`pkg-config --variable=includedir luajit` \ # for lua support
       ..
 make
 sudo make install
@@ -449,13 +472,13 @@ mkdir llvm-build
 
 cd llvm-build
 cmake3 -G "Unix Makefiles" -DLLVM_TARGETS_TO_BUILD="BPF;X86" \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr ../llvm-7.0.1.src
+  -DCMAKE_BUILD_TYPE=Release ../llvm-7.0.1.src
 make
 sudo make install
 
 cd ../clang-build
 cmake3 -G "Unix Makefiles" -DLLVM_TARGETS_TO_BUILD="BPF;X86" \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr ../cfe-7.0.1.src
+  -DCMAKE_BUILD_TYPE=Release ../cfe-7.0.1.src
 make
 sudo make install
 cd ..
@@ -477,7 +500,7 @@ For permanently enable scl environment, please check https://access.redhat.com/s
 ```
 git clone https://github.com/iovisor/bcc.git
 mkdir bcc/build; cd bcc/build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr
+cmake ..
 make
 sudo make install
 ```
@@ -510,7 +533,7 @@ tar xf clang*
 git clone https://github.com/iovisor/bcc.git
 pushd .
 mkdir bcc/build; cd bcc/build
-cmake3 .. -DCMAKE_INSTALL_PREFIX=/usr
+cmake3 ..
 time make
 sudo make install
 popd
