@@ -47,7 +47,7 @@ def positive_nonzero_int(val):
     return ival
 
 def stack_id_err(stack_id):
-    # -EFAULT in get_stackid normally means the stack-trace is not availible,
+    # -EFAULT in get_stackid normally means the stack-trace is not available,
     # Such as getting kernel stack trace in userspace code
     return (stack_id < 0) and (stack_id != -errno.EFAULT)
 
@@ -124,7 +124,7 @@ static bool allow_pid(u64 id)
     return 1;
 }
 
-int mutex_lock_enter(struct pt_regs *ctx)
+static int do_mutex_lock_enter(void *ctx, int skip)
 {
     if (!is_enabled())
         return 0;
@@ -149,7 +149,7 @@ int mutex_lock_enter(struct pt_regs *ctx)
             return 0;
     }
 
-    int stackid = stack_traces.get_stackid(ctx, 0);
+    int stackid = stack_traces.get_stackid(ctx, skip);
     struct depth_id did = {
       .id    = id,
       .depth = *depth,
@@ -237,7 +237,7 @@ static void update_hl_report_total(int *stackid, u64 delta)
     }
 }
 
-int mutex_lock_return(struct pt_regs *ctx)
+static int do_mutex_lock_return(void)
 {
     if (!is_enabled())
         return 0;
@@ -285,7 +285,7 @@ int mutex_lock_return(struct pt_regs *ctx)
     return 0;
 }
 
-int mutex_unlock_enter(struct pt_regs *ctx)
+static int do_mutex_unlock_enter(void)
 {
     if (!is_enabled())
         return 0;
@@ -330,8 +330,48 @@ int mutex_unlock_enter(struct pt_regs *ctx)
     time_held.delete(&did);
     return 0;
 }
+"""
+
+program_kprobe = """
+int mutex_unlock_enter(struct pt_regs *ctx)
+{
+    return do_mutex_unlock_enter();
+}
+
+int mutex_lock_return(struct pt_regs *ctx)
+{
+    return do_mutex_lock_return();
+}
+
+int mutex_lock_enter(struct pt_regs *ctx)
+{
+    return do_mutex_lock_enter(ctx, 0);
+}
+"""
+
+program_kfunc = """
+KFUNC_PROBE(mutex_unlock, void *lock)
+{
+    do_mutex_unlock_enter();
+}
+
+KRETFUNC_PROBE(mutex_lock, void *lock, int ret)
+{
+    do_mutex_lock_return();
+}
+
+KFUNC_PROBE(mutex_lock, void *lock)
+{
+    do_mutex_lock_enter(ctx, 3);
+}
 
 """
+
+is_support_kfunc = BPF.support_kfunc()
+if is_support_kfunc:
+    program += program_kfunc
+else:
+    program += program_kprobe
 
 def sort_list(maxs, totals, counts):
     if (not args.sort):
@@ -363,14 +403,14 @@ def display(sort, maxs, totals, counts):
             stack  = list(stack_traces.walk(k.value))
             caller = b.ksym(stack[1], show_offset=True)
 
-            if (args.caller and caller.find(args.caller)):
+            if (args.caller and caller.find(args.caller.encode())):
                 continue
 
         avg = totals[k].value / counts[k].value
 
         print("%40s %10lu %6lu %10lu %10lu" % (caller, avg, counts[k].value, maxs[k].value, totals[k].value))
 
-        for addr in stack[1:args.stacks]:
+        for addr in stack[2:args.stacks]:
             print("%40s" %  b.ksym(addr, show_offset=True))
 
 
@@ -387,9 +427,10 @@ program = program.replace('STACK_STORAGE_SIZE', str(args.stack_storage_size))
 
 b = BPF(text=program)
 
-b.attach_kprobe(event="mutex_unlock", fn_name="mutex_unlock_enter")
-b.attach_kretprobe(event="mutex_lock", fn_name="mutex_lock_return")
-b.attach_kprobe(event="mutex_lock", fn_name="mutex_lock_enter")
+if not is_support_kfunc:
+    b.attach_kprobe(event="mutex_unlock",  fn_name="mutex_unlock_enter")
+    b.attach_kretprobe(event="mutex_lock", fn_name="mutex_lock_return")
+    b.attach_kprobe(event="mutex_lock",    fn_name="mutex_lock_enter")
 
 enabled = b.get_table("enabled");
 

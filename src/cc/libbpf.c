@@ -52,8 +52,7 @@
 // TODO: Remove this when CentOS 6 support is not needed anymore
 #include "setns.h"
 
-#include "libbpf/src/bpf.h"
-#include "libbpf/src/libbpf.h"
+#include "bcc_libbpf_inc.h"
 
 // TODO: remove these defines when linux-libc-dev exports them properly
 
@@ -213,6 +212,15 @@ static struct bpf_helper helpers[] = {
   {"probe_read_kernel", "5.5"},
   {"probe_read_user_str", "5.5"},
   {"probe_read_kernel_str", "5.5"},
+  {"tcp_send_ack", "5.5"},
+  {"send_signal_thread", "5.5"},
+  {"jiffies64", "5.5"},
+  {"read_branch_records", "5.6"},
+  {"get_ns_current_pid_tgid", "5.6"},
+  {"xdp_output", "5.6"},
+  {"get_netns_cookie", "5.6"},
+  {"get_current_ancestor_cgroup_id", "5.6"},
+  {"sk_assign", "5.6"},
 };
 
 static uint64_t ptr_to_u64(void *ptr)
@@ -508,7 +516,7 @@ int bcc_prog_load_xattr(struct bpf_load_program_attr *attr, int prog_len,
   unsigned name_len = attr->name ? strlen(attr->name) : 0;
   char *tmp_log_buf = NULL, *attr_log_buf = NULL;
   unsigned tmp_log_buf_size = 0, attr_log_buf_size = 0;
-  int ret = 0, name_offset = 0;
+  int ret = 0, name_offset = 0, expected_attach_type = 0;
   char prog_name[BPF_OBJ_NAME_LEN] = {};
 
   unsigned insns_cnt = prog_len / sizeof(struct bpf_insn);
@@ -516,7 +524,7 @@ int bcc_prog_load_xattr(struct bpf_load_program_attr *attr, int prog_len,
 
   if (attr->log_level > 0) {
     if (log_buf_size > 0) {
-      // Use user-provided log buffer if availiable.
+      // Use user-provided log buffer if available.
       log_buf[0] = 0;
       attr_log_buf = log_buf;
       attr_log_buf_size = log_buf_size;
@@ -539,10 +547,26 @@ int bcc_prog_load_xattr(struct bpf_load_program_attr *attr, int prog_len,
   if (name_len) {
     if (strncmp(attr->name, "kprobe__", 8) == 0)
       name_offset = 8;
+    else if (strncmp(attr->name, "kretprobe__", 11) == 0)
+      name_offset = 11;
     else if (strncmp(attr->name, "tracepoint__", 12) == 0)
       name_offset = 12;
     else if (strncmp(attr->name, "raw_tracepoint__", 16) == 0)
       name_offset = 16;
+    else if (strncmp(attr->name, "kfunc__", 7) == 0) {
+      name_offset = 7;
+      expected_attach_type = BPF_TRACE_FENTRY;
+    } else if (strncmp(attr->name, "kretfunc__", 10) == 0) {
+      name_offset = 10;
+      expected_attach_type = BPF_TRACE_FEXIT;
+    }
+
+    if (attr->prog_type == BPF_PROG_TYPE_TRACING) {
+      attr->attach_btf_id = libbpf_find_vmlinux_btf_id(attr->name + name_offset,
+                                                       expected_attach_type);
+      attr->expected_attach_type = expected_attach_type;
+    }
+
     memcpy(prog_name, attr->name + name_offset,
            min(name_len - name_offset, BPF_OBJ_NAME_LEN - 1));
     attr->name = prog_name;
@@ -667,7 +691,8 @@ int bcc_prog_load(enum bpf_prog_type prog_type, const char *name,
   attr.name = name;
   attr.insns = insns;
   attr.license = license;
-  attr.kern_version = kern_version;
+  if (prog_type != BPF_PROG_TYPE_TRACING && prog_type != BPF_PROG_TYPE_EXT)
+    attr.kern_version = kern_version;
   attr.log_level = log_level;
   return bcc_prog_load_xattr(&attr, prog_len, log_buf, log_buf_size, true);
 }
@@ -876,68 +901,6 @@ static int bpf_attach_tracing_event(int progfd, const char *event_path, int pid,
   return 0;
 }
 
-static int enter_mount_ns(int pid) {
-  struct stat self_stat, target_stat;
-  int self_fd = -1, target_fd = -1;
-  char buf[64];
-
-  if (pid < 0)
-    return -1;
-
-  if ((size_t)snprintf(buf, sizeof(buf), "/proc/%d/ns/mnt", pid) >= sizeof(buf))
-    return -1;
-
-  self_fd = open("/proc/self/ns/mnt", O_RDONLY);
-  if (self_fd < 0) {
-    perror("open(/proc/self/ns/mnt)");
-    return -1;
-  }
-
-  target_fd = open(buf, O_RDONLY);
-  if (target_fd < 0) {
-    perror("open(/proc/<pid>/ns/mnt)");
-    goto error;
-  }
-
-  if (fstat(self_fd, &self_stat)) {
-    perror("fstat(self_fd)");
-    goto error;
-  }
-
-  if (fstat(target_fd, &target_stat)) {
-    perror("fstat(target_fd)");
-    goto error;
-  }
-
-  // both target and current ns are same, avoid setns and close all fds
-  if (self_stat.st_ino == target_stat.st_ino)
-    goto error;
-
-  if (setns(target_fd, CLONE_NEWNS)) {
-    perror("setns(target)");
-    goto error;
-  }
-
-  close(target_fd);
-  return self_fd;
-
-error:
-  if (self_fd >= 0)
-    close(self_fd);
-  if (target_fd >= 0)
-    close(target_fd);
-  return -1;
-}
-
-static void exit_mount_ns(int fd) {
-  if (fd < 0)
-    return;
-
-  if (setns(fd, CLONE_NEWNS))
-    perror("setns");
-  close(fd);
-}
-
 /* Creates an [uk]probe using debugfs.
  * On success, the path to the probe is placed in buf (which is assumed to be of size PATH_MAX).
  */
@@ -946,7 +909,7 @@ static int create_probe_event(char *buf, const char *ev_name,
                               const char *config1, uint64_t offset,
                               const char *event_type, pid_t pid, int maxactive)
 {
-  int kfd = -1, res = -1, ns_fd = -1;
+  int kfd = -1, res = -1;
   char ev_alias[256];
   bool is_kprobe = strncmp("kprobe", event_type, 6) == 0;
 
@@ -984,7 +947,6 @@ static int create_probe_event(char *buf, const char *ev_name,
       close(kfd);
       return -1;
     }
-    ns_fd = enter_mount_ns(pid);
   }
 
   if (write(kfd, buf, strlen(buf)) < 0) {
@@ -996,14 +958,10 @@ static int create_probe_event(char *buf, const char *ev_name,
     goto error;
   }
   close(kfd);
-  if (!is_kprobe)
-    exit_mount_ns(ns_fd);
   snprintf(buf, PATH_MAX, "/sys/kernel/debug/tracing/events/%ss/%s",
            event_type, ev_alias);
   return 0;
 error:
-  if (!is_kprobe)
-    exit_mount_ns(ns_fd);
   return -1;
 }
 
@@ -1198,13 +1156,35 @@ int bpf_detach_tracepoint(const char *tp_category, const char *tp_name) {
   return 0;
 }
 
-int bpf_attach_raw_tracepoint(int progfd, char *tp_name)
+int bpf_attach_raw_tracepoint(int progfd, const char *tp_name)
 {
   int ret;
 
   ret = bpf_raw_tracepoint_open(tp_name, progfd);
   if (ret < 0)
     fprintf(stderr, "bpf_attach_raw_tracepoint (%s): %s\n", tp_name, strerror(errno));
+  return ret;
+}
+
+bool bpf_has_kernel_btf(void)
+{
+  return libbpf_find_vmlinux_btf_id("bpf_prog_put", 0);
+}
+
+int bpf_detach_kfunc(int prog_fd, char *func)
+{
+  UNUSED(prog_fd);
+  UNUSED(func);
+  return 0;
+}
+
+int bpf_attach_kfunc(int prog_fd)
+{
+  int ret;
+
+  ret = bpf_raw_tracepoint_open(NULL, prog_fd);
+  if (ret < 0)
+    fprintf(stderr, "bpf_attach_raw_tracepoint (kfunc): %s\n", strerror(errno));
   return ret;
 }
 

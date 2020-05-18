@@ -45,7 +45,7 @@
 #include "exported_files.h"
 #include "libbpf.h"
 #include "bcc_btf.h"
-#include "libbpf/src/bpf.h"
+#include "bcc_libbpf_inc.h"
 
 namespace ebpf {
 
@@ -466,10 +466,18 @@ int BPFModule::finalize() {
       *sections_p;
 
   mod->setTargetTriple("bpf-pc-linux");
+#if LLVM_MAJOR_VERSION >= 11
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  mod->setDataLayout("e-m:e-p:64:64-i64:64-i128:128-n32:64-S128");
+#else
+  mod->setDataLayout("E-m:e-p:64:64-i64:64-i128:128-n32:64-S128");
+#endif
+#else
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
   mod->setDataLayout("e-m:e-p:64:64-i64:64-n32:64-S128");
 #else
   mod->setDataLayout("E-m:e-p:64:64-i64:64-n32:64-S128");
+#endif
 #endif
   sections_p = rw_engine_enabled_ ? &sections_ : &tmp_sections;
 
@@ -927,7 +935,10 @@ int BPFModule::bcc_func_load(int prog_type, const char *name,
   attr.name = name;
   attr.insns = insns;
   attr.license = license;
-  attr.kern_version = kern_version;
+  if (attr.prog_type != BPF_PROG_TYPE_TRACING &&
+      attr.prog_type != BPF_PROG_TYPE_EXT) {
+    attr.kern_version = kern_version;
+  }
   attr.log_level = log_level;
   if (dev_name)
     attr.prog_ifindex = if_nametoindex(dev_name);
@@ -958,6 +969,18 @@ int BPFModule::bcc_func_load(int prog_type, const char *name,
   }
 
   return ret;
+}
+
+int BPFModule::bcc_func_attach(int prog_fd, int attachable_fd,
+                               int attach_type, unsigned int flags) {
+  return bpf_prog_attach(prog_fd, attachable_fd,
+                         (enum bpf_attach_type)attach_type, flags);
+}
+
+int BPFModule::bcc_func_detach(int prog_fd, int attachable_fd,
+                               int attach_type) {
+  return bpf_prog_detach2(prog_fd, attachable_fd,
+                          (enum bpf_attach_type)attach_type);
 }
 
 } // namespace ebpf

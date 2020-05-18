@@ -35,6 +35,7 @@ examples = """examples:
     ./opensnoop -n main   # only print process names containing "main"
     ./opensnoop -e        # show extended fields
     ./opensnoop -f O_WRONLY -f O_RDWR  # only print calls for writing
+    ./opensnoop --cgroupmap ./mappath  # only trace cgroups in this BPF map
 """
 parser = argparse.ArgumentParser(
     description="Trace open() syscalls",
@@ -50,6 +51,8 @@ parser.add_argument("-p", "--pid",
     help="trace this PID only")
 parser.add_argument("-t", "--tid",
     help="trace this TID only")
+parser.add_argument("--cgroupmap",
+    help="trace cgroups in this BPF map only")
 parser.add_argument("-u", "--uid",
     help="trace this UID only")
 parser.add_argument("-d", "--duration",
@@ -99,8 +102,14 @@ struct data_t {
     int flags; // EXTENDED_STRUCT_MEMBER
 };
 
-BPF_HASH(infotmp, u64, struct val_t);
+#if CGROUPSET
+BPF_TABLE_PINNED("hash", u64, u64, cgroupset, 1024, "CGROUPPATH");
+#endif
 BPF_PERF_OUTPUT(events);
+"""
+
+bpf_text_kprobe = """
+BPF_HASH(infotmp, u64, struct val_t);
 
 int trace_entry(struct pt_regs *ctx, int dfd, const char __user *filename, int flags)
 {
@@ -113,6 +122,12 @@ int trace_entry(struct pt_regs *ctx, int dfd, const char __user *filename, int f
     PID_TID_FILTER
     UID_FILTER
     FLAGS_FILTER
+#if CGROUPSET
+    u64 cgroupid = bpf_get_current_cgroup_id();
+    if (cgroupset.lookup(&cgroupid) == NULL) {
+      return 0;
+    }
+#endif
     if (bpf_get_current_comm(&val.comm, sizeof(val.comm)) == 0) {
         val.id = id;
         val.fname = filename;
@@ -150,6 +165,47 @@ int trace_return(struct pt_regs *ctx)
     return 0;
 }
 """
+
+bpf_text_kfunc= """
+KRETFUNC_PROBE(do_sys_open, int dfd, const char *filename, int flags, int mode, int ret)
+{
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id >> 32; // PID is higher part
+    u32 tid = id;       // Cast and get the lower part
+    u32 uid = bpf_get_current_uid_gid();
+
+    PID_TID_FILTER
+    UID_FILTER
+    FLAGS_FILTER
+#if CGROUPSET
+    u64 cgroupid = bpf_get_current_cgroup_id();
+    if (cgroupset.lookup(&cgroupid) == NULL) {
+      return 0;
+    }
+#endif
+
+    struct data_t data = {};
+    bpf_get_current_comm(&data.comm, sizeof(data.comm));
+
+    u64 tsp = bpf_ktime_get_ns();
+
+    bpf_probe_read(&data.fname, sizeof(data.fname), (void *)filename);
+    data.id    = id;
+    data.ts    = tsp / 1000;
+    data.uid   = bpf_get_current_uid_gid();
+    data.flags = flags; // EXTENDED_STRUCT_MEMBER
+    data.ret   = ret;
+
+    events.perf_submit(ctx, &data, sizeof(data));
+}
+"""
+
+is_support_kfunc = BPF.support_kfunc()
+if is_support_kfunc:
+    bpf_text += bpf_text_kfunc
+else:
+    bpf_text += bpf_text_kprobe
+
 if args.tid:  # TID trumps PID
     bpf_text = bpf_text.replace('PID_TID_FILTER',
         'if (tid != %s) { return 0; }' % args.tid)
@@ -163,6 +219,11 @@ if args.uid:
         'if (uid != %s) { return 0; }' % args.uid)
 else:
     bpf_text = bpf_text.replace('UID_FILTER', '')
+if args.cgroupmap:
+    bpf_text = bpf_text.replace('CGROUPSET', '1')
+    bpf_text = bpf_text.replace('CGROUPPATH', args.cgroupmap)
+else:
+    bpf_text = bpf_text.replace('CGROUPSET', '0')
 if args.flag_filter:
     bpf_text = bpf_text.replace('FLAGS_FILTER',
         'if (!(flags & %d)) { return 0; }' % flag_filter_mask)
@@ -178,8 +239,9 @@ if debug or args.ebpf:
 
 # initialize BPF
 b = BPF(text=bpf_text)
-b.attach_kprobe(event="do_sys_open", fn_name="trace_entry")
-b.attach_kretprobe(event="do_sys_open", fn_name="trace_return")
+if not is_support_kfunc:
+    b.attach_kprobe(event="do_sys_open", fn_name="trace_entry")
+    b.attach_kretprobe(event="do_sys_open", fn_name="trace_return")
 
 initial_ts = 0
 

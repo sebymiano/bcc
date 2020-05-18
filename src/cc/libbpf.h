@@ -59,7 +59,7 @@ int bpf_get_next_key(int fd, void *key, void *next_key);
  *     it will not to any additional memory allocation.
  *   - Otherwise, it will allocate an internal temporary buffer for log message
  *     printing, and continue to attempt increase that allocated buffer size if
- *     initial attemp was insufficient in size.
+ *     initial attempt was insufficient in size.
  */
 int bcc_prog_load(enum bpf_prog_type prog_type, const char *name,
                   const struct bpf_insn *insns, int prog_len,
@@ -92,7 +92,13 @@ int bpf_attach_tracepoint(int progfd, const char *tp_category,
                           const char *tp_name);
 int bpf_detach_tracepoint(const char *tp_category, const char *tp_name);
 
-int bpf_attach_raw_tracepoint(int progfd, char *tp_name);
+int bpf_attach_raw_tracepoint(int progfd, const char *tp_name);
+
+int bpf_detach_kfunc(int prog_fd, char *func);
+
+int bpf_attach_kfunc(int prog_fd);
+
+bool bpf_has_kernel_btf(void);
 
 void * bpf_open_perf_buffer(perf_reader_raw_cb raw_cb,
                             perf_reader_lost_cb lost_cb, void *cb_cookie,
