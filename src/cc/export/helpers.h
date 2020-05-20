@@ -69,13 +69,22 @@ R"********(
 #define BCC_SEC(NAME) __attribute__((section(NAME), used))
 
 // Associate map with its key/value types
-#define BPF_ANNOTATE_KV_PAIR(name, type_key, type_val)	\
-        struct ____btf_map_##name {			\
-                type_key key;				\
-                type_val value;				\
-        };						\
-        struct ____btf_map_##name			\
-        __attribute__ ((section(".maps." #name), used))	\
+#define BPF_ANNOTATE_KV_PAIR(name, type_key, type_val)  \
+        struct ____btf_map_##name {     \
+                type_key key;       \
+                type_val value;       \
+        };            \
+        struct ____btf_map_##name     \
+        __attribute__ ((section(".maps." #name), used)) \
+                ____btf_map_##name = { }
+
+// Associate map with its key/value types for QUEUE/STACK map types
+#define BPF_ANNOTATE_KV_PAIR_QUEUESTACK(name, type_val)  \
+        struct ____btf_map_##name {     \
+                type_val value;       \
+        };            \
+        struct ____btf_map_##name     \
+        __attribute__ ((section(".maps." #name), used)) \
                 ____btf_map_##name = { }
 
 // Changes to the macro require changes in BFrontendAction classes
@@ -99,6 +108,37 @@ struct _name##_table_t { \
 __attribute__((section("maps/" _table_type))) \
 struct _name##_table_t _name = { .flags = (_flags), .max_entries = (_max_entries) }; \
 BPF_ANNOTATE_KV_PAIR(_name, _key_type, _leaf_type)
+
+// Changes to the macro require changes in BFrontendAction classes
+#define BPF_QUEUESTACK(_table_type, _name, _leaf_type, _max_entries, _flags) \
+struct _name##_table_t { \
+  _leaf_type leaf; \
+  int * (*peek) (_leaf_type *); \
+  int * (*pop) (_leaf_type *); \
+  int * (*push) (_leaf_type *, u64); \
+  u32 max_entries; \
+  int flags; \
+}; \
+__attribute__((section("maps/" _table_type))) \
+struct _name##_table_t _name = { .flags = (_flags), .max_entries = (_max_entries) }; \
+BPF_ANNOTATE_KV_PAIR_QUEUESTACK(_name, _leaf_type)
+
+// define queue with 3 parameters (_type=queue/stack automatically) and default flags to 0
+#define BPF_QUEUE_STACK3(_type, _name, _leaf_type, _max_entries) \
+  BPF_QUEUESTACK(_type, _name, _leaf_type, _max_entries, 0)
+
+// define queue with 4 parameters (_type=queue/stack automatically)
+#define BPF_QUEUE_STACK4(_type, _name, _leaf_type, _max_entries, _flags) \
+  BPF_QUEUESTACK(_type, _name, _leaf_type, _max_entries, _flags)
+
+// helper for default-variable macro function
+#define BPF_QUEUE_STACKX(_1, _2, _3, _4, NAME, ...) NAME
+
+#define BPF_QUEUE(...) \
+  BPF_QUEUE_STACKX(__VA_ARGS__, BPF_QUEUE_STACK4, BPF_QUEUE_STACK3)("queue", __VA_ARGS__)
+
+#define BPF_STACK(...) \
+  BPF_QUEUE_STACKX(__VA_ARGS__, BPF_QUEUE_STACK4, BPF_QUEUE_STACK3)("stack", __VA_ARGS__)
 
 #define BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries) \
 BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, 0)
@@ -915,15 +955,15 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #endif
 
 #if defined(bpf_target_powerpc)
-#define PT_REGS_PARM1(ctx)	((ctx)->gpr[3])
-#define PT_REGS_PARM2(ctx)	((ctx)->gpr[4])
-#define PT_REGS_PARM3(ctx)	((ctx)->gpr[5])
-#define PT_REGS_PARM4(ctx)	((ctx)->gpr[6])
-#define PT_REGS_PARM5(ctx)	((ctx)->gpr[7])
-#define PT_REGS_PARM6(ctx)	((ctx)->gpr[8])
-#define PT_REGS_RC(ctx)		((ctx)->gpr[3])
-#define PT_REGS_IP(ctx)		((ctx)->nip)
-#define PT_REGS_SP(ctx)		((ctx)->gpr[1])
+#define PT_REGS_PARM1(ctx)  ((ctx)->gpr[3])
+#define PT_REGS_PARM2(ctx)  ((ctx)->gpr[4])
+#define PT_REGS_PARM3(ctx)  ((ctx)->gpr[5])
+#define PT_REGS_PARM4(ctx)  ((ctx)->gpr[6])
+#define PT_REGS_PARM5(ctx)  ((ctx)->gpr[7])
+#define PT_REGS_PARM6(ctx)  ((ctx)->gpr[8])
+#define PT_REGS_RC(ctx)   ((ctx)->gpr[3])
+#define PT_REGS_IP(ctx)   ((ctx)->nip)
+#define PT_REGS_SP(ctx)   ((ctx)->gpr[1])
 #elif defined(bpf_target_s930x)
 #define PT_REGS_PARM1(x) ((x)->gprs[2])
 #define PT_REGS_PARM2(x) ((x)->gprs[3])
@@ -936,29 +976,29 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #define PT_REGS_SP(x) ((x)->gprs[15])
 #define PT_REGS_IP(x) ((x)->psw.addr)
 #elif defined(bpf_target_x86)
-#define PT_REGS_PARM1(ctx)	((ctx)->di)
-#define PT_REGS_PARM2(ctx)	((ctx)->si)
-#define PT_REGS_PARM3(ctx)	((ctx)->dx)
-#define PT_REGS_PARM4(ctx)	((ctx)->cx)
-#define PT_REGS_PARM5(ctx)	((ctx)->r8)
-#define PT_REGS_PARM6(ctx)	((ctx)->r9)
-#define PT_REGS_RET(ctx)	((ctx)->sp)
+#define PT_REGS_PARM1(ctx)  ((ctx)->di)
+#define PT_REGS_PARM2(ctx)  ((ctx)->si)
+#define PT_REGS_PARM3(ctx)  ((ctx)->dx)
+#define PT_REGS_PARM4(ctx)  ((ctx)->cx)
+#define PT_REGS_PARM5(ctx)  ((ctx)->r8)
+#define PT_REGS_PARM6(ctx)  ((ctx)->r9)
+#define PT_REGS_RET(ctx)  ((ctx)->sp)
 #define PT_REGS_FP(ctx)         ((ctx)->bp) /* Works only with CONFIG_FRAME_POINTER */
-#define PT_REGS_RC(ctx)		((ctx)->ax)
-#define PT_REGS_IP(ctx)		((ctx)->ip)
-#define PT_REGS_SP(ctx)		((ctx)->sp)
+#define PT_REGS_RC(ctx)   ((ctx)->ax)
+#define PT_REGS_IP(ctx)   ((ctx)->ip)
+#define PT_REGS_SP(ctx)   ((ctx)->sp)
 #elif defined(bpf_target_arm64)
-#define PT_REGS_PARM1(x)	((x)->regs[0])
-#define PT_REGS_PARM2(x)	((x)->regs[1])
-#define PT_REGS_PARM3(x)	((x)->regs[2])
-#define PT_REGS_PARM4(x)	((x)->regs[3])
-#define PT_REGS_PARM5(x)	((x)->regs[4])
-#define PT_REGS_PARM6(x)	((x)->regs[5])
-#define PT_REGS_RET(x)		((x)->regs[30])
-#define PT_REGS_FP(x)		((x)->regs[29]) /*  Works only with CONFIG_FRAME_POINTER */
-#define PT_REGS_RC(x)		((x)->regs[0])
-#define PT_REGS_SP(x)		((x)->sp)
-#define PT_REGS_IP(x)		((x)->pc)
+#define PT_REGS_PARM1(x)  ((x)->regs[0])
+#define PT_REGS_PARM2(x)  ((x)->regs[1])
+#define PT_REGS_PARM3(x)  ((x)->regs[2])
+#define PT_REGS_PARM4(x)  ((x)->regs[3])
+#define PT_REGS_PARM5(x)  ((x)->regs[4])
+#define PT_REGS_PARM6(x)  ((x)->regs[5])
+#define PT_REGS_RET(x)    ((x)->regs[30])
+#define PT_REGS_FP(x)   ((x)->regs[29]) /*  Works only with CONFIG_FRAME_POINTER */
+#define PT_REGS_RC(x)   ((x)->regs[0])
+#define PT_REGS_SP(x)   ((x)->sp)
+#define PT_REGS_IP(x)   ((x)->pc)
 #else
 #error "bcc does not support this platform yet"
 #endif
