@@ -140,6 +140,20 @@ BPF_ANNOTATE_KV_PAIR_QUEUESTACK(_name, _leaf_type)
 #define BPF_STACK(...) \
   BPF_QUEUE_STACKX(__VA_ARGS__, BPF_QUEUE_STACK4, BPF_QUEUE_STACK3)("stack", __VA_ARGS__)
 
+#define BPF_QUEUESTACK_PINNED(_table_type, _name, _leaf_type, _max_entries, _flags, _pinned) \
+BPF_QUEUESTACK(_table_type ":" _pinned, _name, _leaf_type, _max_entries, _flags)
+
+// define a table same as above but allow it to be referenced by other modules
+#define BPF_QUEUESTACK_PUBLIC(_table_type, _name, _leaf_type, _max_entries, _flags) \
+BPF_QUEUESTACK(_table_type, _name, _leaf_type, _max_entries, _flags); \
+__attribute__((section("maps/export"))) \
+struct _name##_table_t __##_name
+
+#define BPF_QUEUESTACK_SHARED(_table_type, _name, _leaf_type, _max_entries, _flags) \
+BPF_QUEUESTACK(_table_type, _name, _leaf_type, _max_entries, _flags); \
+__attribute__((section("maps/shared"))) \
+struct _name##_table_t __##_name
+
 #define BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries) \
 BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, 0)
 
