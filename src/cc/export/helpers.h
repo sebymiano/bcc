@@ -69,6 +69,12 @@ R"********(
  */
 #define BCC_SEC(NAME) __attribute__((section(NAME), used))
 
+#ifdef B_WORKAROUND
+#define BCC_SEC_HELPERS BCC_SEC("helpers")
+#else
+#define BCC_SEC_HELPERS
+#endif
+
 // Associate map with its key/value types
 #define BPF_ANNOTATE_KV_PAIR(name, type_key, type_val)  \
         struct ____btf_map_##name {     \
@@ -110,6 +116,7 @@ struct _name##_table_t { \
   int (*delete) (_key_type *); \
   void (*call) (void *, int index); \
   void (*increment) (_key_type, ...); \
+  void (*atomic_increment) (_key_type, ...); \
   int (*get_stackid) (void *, u64); \
   u64 (*redirect_map) (int, int); \
   u32 max_entries; \
@@ -265,6 +272,25 @@ struct _name##_table_t _name = { .max_entries = (_max_entries) }
 #define BPF_HASH(...) \
   BPF_HASHX(__VA_ARGS__, BPF_HASH4, BPF_HASH3, BPF_HASH2, BPF_HASH1)(__VA_ARGS__)
 
+#define BPF_PERCPU_HASH1(_name) \
+  BPF_TABLE("percpu_hash", u64, u64, _name, 10240)
+#define BPF_PERCPU_HASH2(_name, _key_type) \
+  BPF_TABLE("percpu_hash", _key_type, u64, _name, 10240)
+#define BPF_PERCPU_HASH3(_name, _key_type, _leaf_type) \
+  BPF_TABLE("percpu_hash", _key_type, _leaf_type, _name, 10240)
+#define BPF_PERCPU_HASH4(_name, _key_type, _leaf_type, _size) \
+  BPF_TABLE("percpu_hash", _key_type, _leaf_type, _name, _size)
+
+// helper for default-variable macro function
+#define BPF_PERCPU_HASHX(_1, _2, _3, _4, NAME, ...) NAME
+
+// Define a hash function, some arguments optional
+// BPF_PERCPU_HASH(name, key_type=u64, leaf_type=u64, size=10240)
+#define BPF_PERCPU_HASH(...)                                            \
+  BPF_PERCPU_HASHX(                                                     \
+    __VA_ARGS__, BPF_PERCPU_HASH4, BPF_PERCPU_HASH3, BPF_PERCPU_HASH2, BPF_PERCPU_HASH1) \
+           (__VA_ARGS__)
+
 #define BPF_ARRAY1(_name) \
   BPF_TABLE("array", int, u64, _name, 10240)
 #define BPF_ARRAY2(_name, _leaf_type) \
@@ -374,8 +400,17 @@ struct _name##_table_t _name = { .max_entries = (_max_entries) }
 #define BPF_ARRAY_OF_MAPS(_name, _inner_map_name, _max_entries) \
   BPF_TABLE("array_of_maps$" _inner_map_name, int, int, _name, _max_entries)
 
-#define BPF_HASH_OF_MAPS(_name, _inner_map_name, _max_entries) \
-  BPF_TABLE("hash_of_maps$" _inner_map_name, int, int, _name, _max_entries)
+#define BPF_HASH_OF_MAPS2(_name, _inner_map_name) \
+  BPF_TABLE("hash_of_maps$" _inner_map_name, int, int, _name, 10240)
+#define BPF_HASH_OF_MAPS3(_name, _key_type, _inner_map_name) \
+  BPF_TABLE("hash_of_maps$" _inner_map_name, _key_type, int, _name, 10240)
+#define BPF_HASH_OF_MAPS4(_name, _key_type, _inner_map_name, _max_entries) \
+  BPF_TABLE("hash_of_maps$" _inner_map_name, _key_type, int, _name, _max_entries)
+
+#define BPF_HASH_OF_MAPSX(_name, _2, _3, _4, NAME, ...) NAME
+
+#define BPF_HASH_OF_MAPS(...) \
+  BPF_HASH_OF_MAPSX(__VA_ARGS__, BPF_HASH_OF_MAPS4, BPF_HASH_OF_MAPS3, BPF_HASH_OF_MAPS2)(__VA_ARGS__)
 
 #define BPF_SK_STORAGE(_name, _leaf_type) \
 struct _name##_table_t { \
@@ -389,12 +424,36 @@ __attribute__((section("maps/sk_storage"))) \
 struct _name##_table_t _name = { .flags = BPF_F_NO_PREALLOC }; \
 BPF_ANNOTATE_KV_PAIR(_name, int, _leaf_type)
 
+#define BPF_INODE_STORAGE(_name, _leaf_type) \
+struct _name##_table_t { \
+  int key; \
+  _leaf_type leaf; \
+  void * (*inode_storage_get) (void *, void *, int); \
+  int (*inode_storage_delete) (void *); \
+  u32 flags; \
+}; \
+__attribute__((section("maps/inode_storage"))) \
+struct _name##_table_t _name = { .flags = BPF_F_NO_PREALLOC }; \
+BPF_ANNOTATE_KV_PAIR(_name, int, _leaf_type)
+
+#define BPF_TASK_STORAGE(_name, _leaf_type) \
+struct _name##_table_t { \
+  int key; \
+  _leaf_type leaf; \
+  void * (*task_storage_get) (void *, void *, int); \
+  int (*task_storage_delete) (void *); \
+  u32 flags; \
+}; \
+__attribute__((section("maps/task_storage"))) \
+struct _name##_table_t _name = { .flags = BPF_F_NO_PREALLOC }; \
+BPF_ANNOTATE_KV_PAIR(_name, int, _leaf_type)
+
 #define BPF_SOCKMAP_COMMON(_name, _max_entries, _kind, _helper_name) \
 struct _name##_table_t { \
   u32 key; \
   int leaf; \
   int (*update) (u32 *, int *); \
-  int (*delete) (int *); \
+  int (*delete) (u32 *); \
   /* ret = map.sock_map_update(ctx, key, flag) */ \
   int (* _helper_name) (void *, void *, u64); \
   u32 max_entries; \
@@ -406,8 +465,33 @@ BPF_ANNOTATE_KV_PAIR(_name, u32, int)
 #define BPF_SOCKMAP(_name, _max_entries) \
   BPF_SOCKMAP_COMMON(_name, _max_entries, "sockmap", sock_map_update)
 
-#define BPF_SOCKHASH(_name, _max_entries) \
-  BPF_SOCKMAP_COMMON(_name, _max_entries, "sockhash", sock_hash_update)
+#define BPF_SOCKHASH_COMMON(_name, _key_type, _max_entries) \
+struct _name##_table_t {\
+  _key_type key;\
+  int leaf; \
+  int (*update) (_key_type *, int *); \
+  int (*delete) (_key_type *); \
+  int (*sock_hash_update) (void *, void *, u64); \
+  int (*msg_redirect_hash) (void *, void *, u64); \
+  int (*sk_redirect_hash) (void *, void *, u64); \
+  u32 max_entries; \
+}; \
+__attribute__((section("maps/sockhash"))) \
+struct _name##_table_t _name = { .max_entries = (_max_entries) }; \
+BPF_ANNOTATE_KV_PAIR(_name, _key_type, int)
+
+#define BPF_SOCKHASH1(_name) \
+  BPF_SOCKHASH_COMMON(_name, u32, 10240)
+#define BPF_SOCKHASH2(_name, _key_type) \
+  BPF_SOCKHASH_COMMON(_name, _key_type, 10240)
+#define BPF_SOCKHASH3(_name, _key_type, _max_entries) \
+  BPF_SOCKHASH_COMMON(_name, _key_type, _max_entries)
+
+#define BPF_SOCKHASHX(_1, _2, _3, NAME, ...) NAME
+// We can define a five-tuple as the key, and basically never define the val type.
+// BPF_SOCKHASH(name, key_type=u64, size=10240)
+#define BPF_SOCKHASH(...) \
+  BPF_SOCKHASHX(__VA_ARGS__, BPF_SOCKHASH3, BPF_SOCKHASH2, BPF_SOCKHASH1)(__VA_ARGS__)
 
 #define BPF_CGROUP_STORAGE_COMMON(_name, _leaf_type, _kind) \
 struct _name##_table_t { \
@@ -806,10 +890,78 @@ static long (*bpf_redirect_neigh)(u32 ifindex, struct bpf_redir_neigh *params,
 				  u64 flags) =
   (void *)BPF_FUNC_redirect_neigh;
 static void * (*bpf_per_cpu_ptr)(const void *percpu_ptr, u32 cpu) =
-  (void *)BPF_FUNC_bpf_per_cpu_ptr;
+  (void *)BPF_FUNC_per_cpu_ptr;
 static void * (*bpf_this_cpu_ptr)(const void *percpu_ptr) =
-  (void *)BPF_FUNC_bpf_this_cpu_ptr;
-long (*bpf_redirect_peer)(u32 ifindex, u64 flags) = (void *)BPF_FUNC_redirect_peer;
+  (void *)BPF_FUNC_this_cpu_ptr;
+static long (*bpf_redirect_peer)(u32 ifindex, u64 flags) = (void *)BPF_FUNC_redirect_peer;
+
+static void *(*bpf_task_storage_get)(void *map, struct task_struct *task,
+				     void *value, __u64 flags) =
+  (void *)BPF_FUNC_task_storage_get;
+static long (*bpf_task_storage_delete)(void *map, struct task_struct *task) =
+  (void *)BPF_FUNC_task_storage_delete;
+static struct task_struct *(*bpf_get_current_task_btf)(void) =
+  (void *)BPF_FUNC_get_current_task_btf;
+struct linux_binprm;
+static long (*bpf_bprm_opts_set)(struct linux_binprm *bprm, __u64 flags) =
+  (void *)BPF_FUNC_bprm_opts_set;
+static __u64 (*bpf_ktime_get_coarse_ns)(void) = (void *)BPF_FUNC_ktime_get_coarse_ns;
+struct inode;
+static long (*bpf_ima_inode_hash)(struct inode *inode, void *dst, __u32 size) =
+  (void *)BPF_FUNC_ima_inode_hash;
+struct file;
+static struct socket *(*bpf_sock_from_file)(struct file *file) =
+  (void *)BPF_FUNC_sock_from_file;
+static long (*bpf_check_mtu)(void *ctx, __u32 ifindex, __u32 *mtu_len,
+                             __s32 len_diff, __u64 flags) =
+  (void *)BPF_FUNC_check_mtu;
+static long (*bpf_for_each_map_elem)(void *map, void *callback_fn,
+                                     void *callback_ctx, __u64 flags) =
+  (void *)BPF_FUNC_for_each_map_elem;
+static long (*bpf_snprintf)(char *str, __u32 str_size, const char *fmt,
+                            __u64 *data, __u32 data_len) =
+  (void *)BPF_FUNC_snprintf;
+
+static long (*bpf_sys_bpf)(__u32 cmd, void *attr, __u32 attr_size) =
+  (void *)BPF_FUNC_sys_bpf;
+static long (*bpf_btf_find_by_name_kind)(char *name, int name_sz, __u32 kind, int flags) =
+  (void *)BPF_FUNC_btf_find_by_name_kind;
+static long (*bpf_sys_close)(__u32 fd) = (void *)BPF_FUNC_sys_close;
+
+struct bpf_timer;
+static long (*bpf_timer_init)(struct bpf_timer *timer, void *map, __u64 flags) =
+  (void *)BPF_FUNC_timer_init;
+static long (*bpf_timer_set_callback)(struct bpf_timer *timer, void *callback_fn) =
+  (void *)BPF_FUNC_timer_set_callback;
+static long (*bpf_timer_start)(struct bpf_timer *timer, __u64 nsecs, __u64 flags) =
+  (void *)BPF_FUNC_timer_start;
+static long (*bpf_timer_cancel)(struct bpf_timer *timer) = (void *)BPF_FUNC_timer_cancel;
+
+static __u64 (*bpf_get_func_ip)(void *ctx) = (void *)BPF_FUNC_get_func_ip;
+static __u64 (*bpf_get_attach_cookie)(void *ctx) = (void *)BPF_FUNC_get_attach_cookie;
+static long (*bpf_task_pt_regs)(struct task_struct *task) = (void *)BPF_FUNC_task_pt_regs;
+
+static long (*bpf_get_branch_snapshot)(void *entries, __u32 size, __u64 flags) =
+  (void *)BPF_FUNC_get_branch_snapshot;
+static long (*bpf_trace_vprintk)(const char *fmt, __u32 fmt_size, const void *data,
+                                 __u32 data_len) =
+  (void *)BPF_FUNC_trace_vprintk;
+static struct unix_sock *(*bpf_skc_to_unix_sock)(void *sk) =
+  (void *)BPF_FUNC_skc_to_unix_sock;
+static long (*bpf_kallsyms_lookup_name)(const char *name, int name_sz, int flags,
+				__u64 *res) =
+  (void *)BPF_FUNC_kallsyms_lookup_name;
+static long (*bpf_find_vma)(struct task_struct *task, __u64 addr, void *callback_fn,
+			    void *callback_ctx, __u64 flags) =
+  (void *)BPF_FUNC_find_vma;
+static long (*bpf_loop)(__u32 nr_loops, void *callback_fn, void *callback_ctx, __u64 flags) =
+  (void *)BPF_FUNC_loop;
+static long (*bpf_strncmp)(const char *s1, __u32 s1_sz, const char *s2) =
+  (void *)BPF_FUNC_strncmp;
+static long (*bpf_get_func_arg)(void *ctx, __u32 n, __u64 *value) =
+  (void *)BPF_FUNC_get_func_arg;
+static long (*bpf_get_func_ret)(void *ctx, __u64 *value) = (void *)BPF_FUNC_get_func_ret;
+static long (*bpf_get_func_arg_cnt)(void *ctx) = (void *)BPF_FUNC_get_func_arg_cnt;
 
 /* llvm builtin functions that eBPF C program may use to
  * emit BPF_LD_ABS and BPF_LD_IND instructions
@@ -930,7 +1082,7 @@ unsigned int bpf_log2l(unsigned long v)
 struct bpf_context;
 
 static inline __attribute__((always_inline))
-BCC_SEC("helpers")
+BCC_SEC_HELPERS
 u64 bpf_dext_pkt(void *pkt, u64 off, u64 bofs, u64 bsz) {
   if (bofs == 0 && bsz == 8) {
     return load_byte(pkt, off);
@@ -953,7 +1105,7 @@ u64 bpf_dext_pkt(void *pkt, u64 off, u64 bofs, u64 bsz) {
 }
 
 static inline __attribute__((always_inline))
-BCC_SEC("helpers")
+BCC_SEC_HELPERS
 void bpf_dins_pkt(void *pkt, u64 off, u64 bofs, u64 bsz, u64 val) {
   // The load_xxx function does a bswap before returning the short/word/dword,
   // so the value in register will always be host endian. However, the bytes
@@ -996,25 +1148,25 @@ void bpf_dins_pkt(void *pkt, u64 off, u64 bofs, u64 bsz, u64 val) {
 }
 
 static inline __attribute__((always_inline))
-BCC_SEC("helpers")
+BCC_SEC_HELPERS
 void * bpf_map_lookup_elem_(uintptr_t map, void *key) {
   return bpf_map_lookup_elem((void *)map, key);
 }
 
 static inline __attribute__((always_inline))
-BCC_SEC("helpers")
+BCC_SEC_HELPERS
 int bpf_map_update_elem_(uintptr_t map, void *key, void *value, u64 flags) {
   return bpf_map_update_elem((void *)map, key, value, flags);
 }
 
 static inline __attribute__((always_inline))
-BCC_SEC("helpers")
+BCC_SEC_HELPERS
 int bpf_map_delete_elem_(uintptr_t map, void *key) {
   return bpf_map_delete_elem((void *)map, key);
 }
 
 static inline __attribute__((always_inline))
-BCC_SEC("helpers")
+BCC_SEC_HELPERS
 int bpf_l3_csum_replace_(void *ctx, u64 off, u64 from, u64 to, u64 flags) {
   switch (flags & 0xf) {
     case 2:
@@ -1030,7 +1182,7 @@ int bpf_l3_csum_replace_(void *ctx, u64 off, u64 from, u64 to, u64 flags) {
 }
 
 static inline __attribute__((always_inline))
-BCC_SEC("helpers")
+BCC_SEC_HELPERS
 int bpf_l4_csum_replace_(void *ctx, u64 off, u64 from, u64 to, u64 flags) {
   switch (flags & 0xf) {
     case 2:
@@ -1066,6 +1218,9 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #elif defined(__TARGET_ARCH_powerpc)
 #define bpf_target_powerpc
 #define bpf_target_defined
+#elif defined(__TARGET_ARCH_mips)
+#define bpf_target_mips
+#define bpf_target_defined
 #else
 #undef bpf_target_defined
 #endif
@@ -1080,6 +1235,8 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #define bpf_target_arm64
 #elif defined(__powerpc__)
 #define bpf_target_powerpc
+#elif defined(__mips__)
+#define bpf_target_mips
 #endif
 #endif
 
@@ -1117,19 +1274,51 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #define PT_REGS_IP(ctx)   ((ctx)->ip)
 #define PT_REGS_SP(ctx)   ((ctx)->sp)
 #elif defined(bpf_target_arm64)
-#define PT_REGS_PARM1(x)  ((x)->regs[0])
-#define PT_REGS_PARM2(x)  ((x)->regs[1])
-#define PT_REGS_PARM3(x)  ((x)->regs[2])
-#define PT_REGS_PARM4(x)  ((x)->regs[3])
-#define PT_REGS_PARM5(x)  ((x)->regs[4])
-#define PT_REGS_PARM6(x)  ((x)->regs[5])
-#define PT_REGS_RET(x)    ((x)->regs[30])
-#define PT_REGS_FP(x)   ((x)->regs[29]) /*  Works only with CONFIG_FRAME_POINTER */
-#define PT_REGS_RC(x)   ((x)->regs[0])
-#define PT_REGS_SP(x)   ((x)->sp)
-#define PT_REGS_IP(x)   ((x)->pc)
+#define PT_REGS_PARM1(x)	((x)->regs[0])
+#define PT_REGS_PARM2(x)	((x)->regs[1])
+#define PT_REGS_PARM3(x)	((x)->regs[2])
+#define PT_REGS_PARM4(x)	((x)->regs[3])
+#define PT_REGS_PARM5(x)	((x)->regs[4])
+#define PT_REGS_PARM6(x)	((x)->regs[5])
+#define PT_REGS_RET(x)		((x)->regs[30])
+#define PT_REGS_FP(x)		((x)->regs[29]) /*  Works only with CONFIG_FRAME_POINTER */
+#define PT_REGS_RC(x)		((x)->regs[0])
+#define PT_REGS_SP(x)		((x)->sp)
+#define PT_REGS_IP(x)		((x)->pc)
+#elif defined(bpf_target_mips)
+#define PT_REGS_PARM1(x) ((x)->regs[4])
+#define PT_REGS_PARM2(x) ((x)->regs[5])
+#define PT_REGS_PARM3(x) ((x)->regs[6])
+#define PT_REGS_PARM4(x) ((x)->regs[7])
+#define PT_REGS_PARM5(x) ((x)->regs[8])
+#define PT_REGS_PARM6(x) ((x)->regs[9])
+#define PT_REGS_RET(x) ((x)->regs[31])
+#define PT_REGS_FP(x) ((x)->regs[30]) /* Works only with CONFIG_FRAME_POINTER */
+#define PT_REGS_RC(x) ((x)->regs[2])
+#define PT_REGS_SP(x) ((x)->regs[29])
+#define PT_REGS_IP(x) ((x)->cp0_epc)
 #else
 #error "bcc does not support this platform yet"
+#endif
+
+#if defined(CONFIG_ARCH_HAS_SYSCALL_WRAPPER) && !defined(__s390x__)
+#define PT_REGS_SYSCALL_CTX(ctx)	((struct pt_regs *)PT_REGS_PARM1(ctx))
+#else
+#define PT_REGS_SYSCALL_CTX(ctx)	(ctx)
+#endif
+/* Helpers for syscall params. Pass in a ctx returned from PT_REGS_SYSCALL_CTX.
+ */
+#define PT_REGS_PARM1_SYSCALL(ctx)	PT_REGS_PARM1(ctx)
+#define PT_REGS_PARM2_SYSCALL(ctx)	PT_REGS_PARM2(ctx)
+#define PT_REGS_PARM3_SYSCALL(ctx)	PT_REGS_PARM3(ctx)
+#if defined(bpf_target_x86)
+#define PT_REGS_PARM4_SYSCALL(ctx)	((ctx)->r10) /* for syscall only */
+#else
+#define PT_REGS_PARM4_SYSCALL(ctx)	PT_REGS_PARM4(ctx)
+#endif
+#define PT_REGS_PARM5_SYSCALL(ctx)	PT_REGS_PARM5(ctx)
+#ifdef PT_REGS_PARM6
+#define PT_REGS_PARM6_SYSCALL(ctx)	PT_REGS_PARM6(ctx)
 #endif
 
 #define lock_xadd(ptr, val) ((void)__sync_fetch_and_add(ptr, val))
@@ -1182,13 +1371,16 @@ int name(unsigned long long *ctx)                               \
 static int ____##name(unsigned long long *ctx, ##args)
 
 #define KFUNC_PROBE(event, args...) \
-        BPF_PROG(kfunc__ ## event, args)
+        BPF_PROG(kfunc__ ## event, ##args)
 
 #define KRETFUNC_PROBE(event, args...) \
-        BPF_PROG(kretfunc__ ## event, args)
+        BPF_PROG(kretfunc__ ## event, ##args)
+
+#define KMOD_RET(event, args...) \
+        BPF_PROG(kmod_ret__ ## event, ##args)
 
 #define LSM_PROBE(event, args...) \
-        BPF_PROG(lsm__ ## event, args)
+        BPF_PROG(lsm__ ## event, ##args)
 
 #define BPF_ITER(target) \
         int bpf_iter__ ## target (struct bpf_iter__ ## target *ctx)
@@ -1197,14 +1389,20 @@ static int ____##name(unsigned long long *ctx, ##args)
         do {                                                              \
             unsigned short __offset = args->data_loc_##field & 0xFFFF;    \
             bpf_probe_read((void *)dst, length, (char *)args + __offset); \
-        } while (0);
+        } while (0)
 
 #define TP_DATA_LOC_READ(dst, field)                                        \
         do {                                                                \
             unsigned short __offset = args->data_loc_##field & 0xFFFF;      \
             unsigned short __length = args->data_loc_##field >> 16;         \
             bpf_probe_read((void *)dst, __length, (char *)args + __offset); \
-        } while (0);
+        } while (0)
+
+#define TP_DATA_LOC_READ_STR(dst, field, length)                                \
+        do {                                                                    \
+            unsigned short __offset = args->data_loc_##field & 0xFFFF;          \
+            bpf_probe_read_str((void *)dst, length, (char *)args + __offset);   \
+        } while (0)
 
 #endif
 )********"

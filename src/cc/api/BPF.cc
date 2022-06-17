@@ -92,7 +92,7 @@ std::string sanitize_str(std::string str, bool (*validator)(char),
 StatusTuple BPF::init_usdt(const USDT& usdt) {
   USDT u(usdt);
   StatusTuple init_stp = u.init();
-  if (init_stp.code() != 0) {
+  if (!init_stp.ok()) {
     return init_stp;
   }
 
@@ -112,7 +112,7 @@ StatusTuple BPF::init(const std::string& bpf_program,
   usdt_.reserve(usdt.size());
   for (const auto& u : usdt) {
     StatusTuple init_stp = init_usdt(u);
-    if (init_stp.code() != 0) {
+    if (!init_stp.ok()) {
       init_fail_reset();
       return init_stp;
     }
@@ -134,7 +134,7 @@ StatusTuple BPF::init(const std::string& bpf_program,
 
 BPF::~BPF() {
   auto res = detach_all();
-  if (res.code() != 0)
+  if (!res.ok())
     std::cerr << "Failed to detach all probes on destruction: " << std::endl
               << res.msg() << std::endl;
   bcc_free_buildsymcache(bsymcache_);
@@ -147,7 +147,7 @@ StatusTuple BPF::detach_all() {
 
   for (auto& it : kprobes_) {
     auto res = detach_kprobe_event(it.first, it.second);
-    if (res.code() != 0) {
+    if (!res.ok()) {
       error_msg += "Failed to detach kprobe event " + it.first + ": ";
       error_msg += res.msg() + "\n";
       has_error = true;
@@ -156,7 +156,7 @@ StatusTuple BPF::detach_all() {
 
   for (auto& it : uprobes_) {
     auto res = detach_uprobe_event(it.first, it.second);
-    if (res.code() != 0) {
+    if (!res.ok()) {
       error_msg += "Failed to detach uprobe event " + it.first + ": ";
       error_msg += res.msg() + "\n";
       has_error = true;
@@ -165,7 +165,7 @@ StatusTuple BPF::detach_all() {
 
   for (auto& it : tracepoints_) {
     auto res = detach_tracepoint_event(it.first, it.second);
-    if (res.code() != 0) {
+    if (!res.ok()) {
       error_msg += "Failed to detach Tracepoint " + it.first + ": ";
       error_msg += res.msg() + "\n";
       has_error = true;
@@ -174,7 +174,7 @@ StatusTuple BPF::detach_all() {
 
   for (auto& it : raw_tracepoints_) {
     auto res = detach_raw_tracepoint_event(it.first, it.second);
-    if (res.code() != 0) {
+    if (!res.ok()) {
       error_msg += "Failed to detach Raw tracepoint " + it.first + ": ";
       error_msg += res.msg() + "\n";
       has_error = true;
@@ -183,7 +183,7 @@ StatusTuple BPF::detach_all() {
 
   for (auto& it : perf_buffers_) {
     auto res = it.second->close_all_cpu();
-    if (res.code() != 0) {
+    if (!res.ok()) {
       error_msg += "Failed to close perf buffer " + it.first + ": ";
       error_msg += res.msg() + "\n";
       has_error = true;
@@ -193,7 +193,7 @@ StatusTuple BPF::detach_all() {
 
   for (auto& it : perf_event_arrays_) {
     auto res = it.second->close_all_cpu();
-    if (res.code() != 0) {
+    if (!res.ok()) {
       error_msg += "Failed to close perf event array " + it.first + ": ";
       error_msg += res.msg() + "\n";
       has_error = true;
@@ -203,7 +203,7 @@ StatusTuple BPF::detach_all() {
 
   for (auto& it : perf_events_) {
     auto res = detach_perf_event_all_cpu(it.second);
-    if (res.code() != 0) {
+    if (!res.ok()) {
       error_msg += res.msg() + "\n";
       has_error = true;
     }
@@ -303,7 +303,7 @@ StatusTuple BPF::attach_uprobe(const std::string& binary_path,
 StatusTuple BPF::attach_usdt_without_validation(const USDT& u, pid_t pid) {
   auto& probe = *static_cast<::USDT::Probe*>(u.probe_.get());
   if (!uprobe_ref_ctr_supported() && !probe.enable(u.probe_func_))
-    return StatusTuple(-1, "Unable to enable USDT %s" + u.print_name());
+    return StatusTuple(-1, "Unable to enable USDT %s", u.print_name().c_str());
 
   bool failed = false;
   std::string err_msg;
@@ -671,7 +671,7 @@ int BPF::poll_perf_buffer(const std::string& name, int timeout_ms) {
 }
 
 StatusTuple BPF::load_func(const std::string& func_name, bpf_prog_type type,
-                           int& fd) {
+                           int& fd, unsigned flags) {
   if (funcs_.find(func_name) != funcs_.end()) {
     fd = funcs_[func_name];
     return StatusTuple::OK();
@@ -692,7 +692,7 @@ StatusTuple BPF::load_func(const std::string& func_name, bpf_prog_type type,
   fd = bpf_module_->bcc_func_load(type, func_name.c_str(),
                      reinterpret_cast<struct bpf_insn*>(func_start), func_size,
                      bpf_module_->license(), bpf_module_->kern_version(),
-                     log_level, nullptr, 0);
+                     log_level, nullptr, 0, nullptr, flags);
 
   if (fd < 0)
     return StatusTuple(-1, "Failed to load %s: %d", func_name.c_str(), fd);
@@ -831,13 +831,6 @@ BPFStackBuildIdTable BPF::get_stackbuildid_table(const std::string &name, bool u
   if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
     return BPFStackBuildIdTable(it->second, use_debug_file, check_debug_file_crc, get_bsymcache());
   return BPFStackBuildIdTable({}, use_debug_file, check_debug_file_crc, get_bsymcache());
-}
-
-BPFMapInMapTable BPF::get_map_in_map_table(const std::string& name) {
-  TableStorage::iterator it;
-  if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
-    return BPFMapInMapTable(it->second);
-  return BPFMapInMapTable({});
 }
 
 BPFSockmapTable BPF::get_sockmap_table(const std::string& name) {

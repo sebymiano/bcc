@@ -4,7 +4,7 @@
 # tcptop    Summarize TCP send/recv throughput by host.
 #           For Linux, uses BCC, eBPF. Embedded C.
 #
-# USAGE: tcptop [-h] [-C] [-S] [-p PID] [interval [count]]
+# USAGE: tcptop [-h] [-C] [-S] [-p PID] [interval [count]] [-4 | -6]
 #
 # This uses dynamic tracing of kernel functions, and will need to be updated
 # to match kernel changes.
@@ -48,6 +48,8 @@ examples = """examples:
     ./tcptop -p 181    # only trace PID 181
     ./tcptop --cgroupmap mappath  # only trace cgroups in this BPF map
     ./tcptop --mntnsmap mappath   # only trace mount namespaces in the map
+    ./tcptop -4        # trace IPv4 family only
+    ./tcptop -6        # trace IPv6 family only
 """
 parser = argparse.ArgumentParser(
     description="Summarize TCP send/recv throughput by host",
@@ -67,6 +69,11 @@ parser.add_argument("--cgroupmap",
     help="trace cgroups in this BPF map only")
 parser.add_argument("--mntnsmap",
     help="trace mount namespaces in this BPF map only")
+group = parser.add_mutually_exclusive_group()
+group.add_argument("-4", "--ipv4", action="store_true",
+    help="trace IPv4 family only")
+group.add_argument("-6", "--ipv6", action="store_true",
+    help="trace IPv6 family only")
 parser.add_argument("--ebpf", action="store_true",
     help=argparse.SUPPRESS)
 args = parser.parse_args()
@@ -83,6 +90,7 @@ bpf_text = """
 
 struct ipv4_key_t {
     u32 pid;
+    char name[TASK_COMM_LEN];
     u32 saddr;
     u32 daddr;
     u16 lport;
@@ -95,6 +103,7 @@ struct ipv6_key_t {
     unsigned __int128 saddr;
     unsigned __int128 daddr;
     u32 pid;
+    char name[TASK_COMM_LEN];
     u16 lport;
     u16 dport;
     u64 __pad__;
@@ -114,8 +123,11 @@ int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk,
 
     u16 dport = 0, family = sk->__sk_common.skc_family;
 
+    FILTER_FAMILY
+    
     if (family == AF_INET) {
         struct ipv4_key_t ipv4_key = {.pid = pid};
+        bpf_get_current_comm(&ipv4_key.name, sizeof(ipv4_key.name));
         ipv4_key.saddr = sk->__sk_common.skc_rcv_saddr;
         ipv4_key.daddr = sk->__sk_common.skc_daddr;
         ipv4_key.lport = sk->__sk_common.skc_num;
@@ -125,6 +137,7 @@ int kprobe__tcp_sendmsg(struct pt_regs *ctx, struct sock *sk,
 
     } else if (family == AF_INET6) {
         struct ipv6_key_t ipv6_key = {.pid = pid};
+        bpf_get_current_comm(&ipv6_key.name, sizeof(ipv6_key.name));
         bpf_probe_read_kernel(&ipv6_key.saddr, sizeof(ipv6_key.saddr),
             &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
         bpf_probe_read_kernel(&ipv6_key.daddr, sizeof(ipv6_key.daddr),
@@ -160,8 +173,11 @@ int kprobe__tcp_cleanup_rbuf(struct pt_regs *ctx, struct sock *sk, int copied)
     if (copied <= 0)
         return 0;
 
+    FILTER_FAMILY
+    
     if (family == AF_INET) {
         struct ipv4_key_t ipv4_key = {.pid = pid};
+        bpf_get_current_comm(&ipv4_key.name, sizeof(ipv4_key.name));
         ipv4_key.saddr = sk->__sk_common.skc_rcv_saddr;
         ipv4_key.daddr = sk->__sk_common.skc_daddr;
         ipv4_key.lport = sk->__sk_common.skc_num;
@@ -171,6 +187,7 @@ int kprobe__tcp_cleanup_rbuf(struct pt_regs *ctx, struct sock *sk, int copied)
 
     } else if (family == AF_INET6) {
         struct ipv6_key_t ipv6_key = {.pid = pid};
+        bpf_get_current_comm(&ipv6_key.name, sizeof(ipv6_key.name));
         bpf_probe_read_kernel(&ipv6_key.saddr, sizeof(ipv6_key.saddr),
             &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
         bpf_probe_read_kernel(&ipv6_key.daddr, sizeof(ipv6_key.daddr),
@@ -192,23 +209,24 @@ if args.pid:
         'if (pid != %s) { return 0; }' % args.pid)
 else:
     bpf_text = bpf_text.replace('FILTER_PID', '')
+if args.ipv4:
+    bpf_text = bpf_text.replace('FILTER_FAMILY',
+        'if (family != AF_INET) { return 0; }')
+elif args.ipv6:
+    bpf_text = bpf_text.replace('FILTER_FAMILY',
+        'if (family != AF_INET6) { return 0; }')
+bpf_text = bpf_text.replace('FILTER_FAMILY', '')
 bpf_text = filter_by_containers(args) + bpf_text
 if debug or args.ebpf:
     print(bpf_text)
     if args.ebpf:
         exit()
 
-TCPSessionKey = namedtuple('TCPSession', ['pid', 'laddr', 'lport', 'daddr', 'dport'])
-
-def pid_to_comm(pid):
-    try:
-        comm = open("/proc/%d/comm" % pid, "r").read().rstrip()
-        return comm
-    except IOError:
-        return str(pid)
+TCPSessionKey = namedtuple('TCPSession', ['pid', 'name', 'laddr', 'lport', 'daddr', 'dport'])
 
 def get_ipv4_session_key(k):
     return TCPSessionKey(pid=k.pid,
+                         name=k.name,
                          laddr=inet_ntop(AF_INET, pack("I", k.saddr)),
                          lport=k.lport,
                          daddr=inet_ntop(AF_INET, pack("I", k.daddr)),
@@ -216,6 +234,7 @@ def get_ipv4_session_key(k):
 
 def get_ipv6_session_key(k):
     return TCPSessionKey(pid=k.pid,
+                         name=k.name,
                          laddr=inet_ntop(AF_INET6, k.saddr),
                          lport=k.lport,
                          daddr=inet_ntop(AF_INET6, k.daddr),
@@ -270,7 +289,7 @@ while i != args.count and not exiting:
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
         print("%-6d %-12.12s %-21s %-21s %6d %6d" % (k.pid,
-            pid_to_comm(k.pid),
+            k.name,
             k.laddr + ":" + str(k.lport),
             k.daddr + ":" + str(k.dport),
             int(recv_bytes / 1024), int(send_bytes / 1024)))
@@ -297,7 +316,7 @@ while i != args.count and not exiting:
                                               key=lambda kv: sum(kv[1]),
                                               reverse=True):
         print("%-6d %-12.12s %-32s %-32s %6d %6d" % (k.pid,
-            pid_to_comm(k.pid),
+            k.name,
             k.laddr + ":" + str(k.lport),
             k.daddr + ":" + str(k.dport),
             int(recv_bytes / 1024), int(send_bytes / 1024)))

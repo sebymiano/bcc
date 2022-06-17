@@ -4,6 +4,7 @@
 // Based on filelife(8) from BCC by Brendan Gregg & Allan McAleavy.
 // 20-Mar-2020   Wenbo Zhang   Created this.
 #include <argp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,13 +19,16 @@
 #define PERF_BUFFER_PAGES	16
 #define PERF_POLL_TIMEOUT_MS	100
 
+static volatile sig_atomic_t exiting = 0;
+
 static struct env {
 	pid_t pid;
 	bool verbose;
 } env = { };
 
 const char *argp_program_version = "filelife 0.1";
-const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
+const char *argp_program_bug_address =
+	"https://github.com/iovisor/bcc/tree/master/libbpf-tools";
 const char argp_program_doc[] =
 "Trace the lifespan of short-lived files.\n"
 "\n"
@@ -37,6 +41,7 @@ const char argp_program_doc[] =
 static const struct argp_option opts[] = {
 	{ "pid", 'p', "PID", 0, "Process PID to trace" },
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
+	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
 	{},
 };
 
@@ -45,6 +50,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	int pid;
 
 	switch (key) {
+	case 'h':
+		argp_state_help(state, stderr, ARGP_HELP_STD_HELP);
+		break;
 	case 'v':
 		env.verbose = true;
 		break;
@@ -63,12 +71,16 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
-int libbpf_print_fn(enum libbpf_print_level level,
-		    const char *format, va_list args)
+static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	if (level == LIBBPF_DEBUG && !env.verbose)
 		return 0;
 	return vfprintf(stderr, format, args);
+}
+
+static void sig_int(int signo)
+{
+	exiting = 1;
 }
 
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
@@ -98,7 +110,6 @@ int main(int argc, char **argv)
 		.parser = parse_arg,
 		.doc = argp_program_doc,
 	};
-	struct perf_buffer_opts pb_opts;
 	struct perf_buffer *pb = NULL;
 	struct filelife_bpf *obj;
 	int err;
@@ -107,17 +118,12 @@ int main(int argc, char **argv)
 	if (err)
 		return err;
 
+	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 	libbpf_set_print(libbpf_print_fn);
-
-	err = bump_memlock_rlimit();
-	if (err) {
-		fprintf(stderr, "failed to increase rlimit: %d\n", err);
-		return 1;
-	}
 
 	obj = filelife_bpf__open();
 	if (!obj) {
-		fprintf(stderr, "failed to open and/or load BPF object\n");
+		fprintf(stderr, "failed to open BPF object\n");
 		return 1;
 	}
 
@@ -139,20 +145,29 @@ int main(int argc, char **argv)
 	printf("Tracing the lifespan of short-lived files ... Hit Ctrl-C to end.\n");
 	printf("%-8s %-6s %-16s %-7s %s\n", "TIME", "PID", "COMM", "AGE(s)", "FILE");
 
-	pb_opts.sample_cb = handle_event;
-	pb_opts.lost_cb = handle_lost_events;
 	pb = perf_buffer__new(bpf_map__fd(obj->maps.events), PERF_BUFFER_PAGES,
-			      &pb_opts);
-	err = libbpf_get_error(pb);
-	if (err) {
-		pb = NULL;
+			      handle_event, handle_lost_events, NULL, NULL);
+	if (!pb) {
+		err = -errno;
 		fprintf(stderr, "failed to open perf buffer: %d\n", err);
 		goto cleanup;
 	}
 
-	while ((err = perf_buffer__poll(pb, PERF_POLL_TIMEOUT_MS)) >= 0)
-		;
-	fprintf(stderr, "error polling perf buffer: %d\n", err);
+	if (signal(SIGINT, sig_int) == SIG_ERR) {
+		fprintf(stderr, "can't set signal handler: %s\n", strerror(errno));
+		err = 1;
+		goto cleanup;
+	}
+
+	while (!exiting) {
+		err = perf_buffer__poll(pb, PERF_POLL_TIMEOUT_MS);
+		if (err < 0 && err != -EINTR) {
+			fprintf(stderr, "error polling perf buffer: %s\n", strerror(-err));
+			goto cleanup;
+		}
+		/* reset err to return 0 if exiting */
+		err = 0;
+	}
 
 cleanup:
 	perf_buffer__free(pb);

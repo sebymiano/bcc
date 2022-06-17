@@ -31,7 +31,8 @@ struct env {
 static volatile bool exiting;
 
 const char *argp_program_version = "softirqs 0.1";
-const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
+const char *argp_program_bug_address =
+	"https://github.com/iovisor/bcc/tree/master/libbpf-tools";
 const char argp_program_doc[] =
 "Summarize soft irq event time as histograms.\n"
 "\n"
@@ -48,6 +49,7 @@ static const struct argp_option opts[] = {
 	{ "timestamp", 'T', NULL, 0, "Include timestamp on output" },
 	{ "nanoseconds", 'N', NULL, 0, "Output in nanoseconds" },
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
+	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
 	{},
 };
 
@@ -56,6 +58,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	static int pos_args;
 
 	switch (key) {
+	case 'h':
+		argp_state_help(state, stderr, ARGP_HELP_STD_HELP);
+		break;
 	case 'v':
 		env.verbose = true;
 		break;
@@ -95,8 +100,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
-int libbpf_print_fn(enum libbpf_print_level level,
-		const char *format, va_list args)
+static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	if (level == LIBBPF_DEBUG && !env.verbose)
 		return 0;
@@ -191,17 +195,12 @@ int main(int argc, char **argv)
 	if (err)
 		return err;
 
+	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 	libbpf_set_print(libbpf_print_fn);
-
-	err = bump_memlock_rlimit();
-	if (err) {
-		fprintf(stderr, "failed to increase rlimit: %d\n", err);
-		return 1;
-	}
 
 	obj = softirqs_bpf__open();
 	if (!obj) {
-		fprintf(stderr, "failed to open and/or load BPF object\n");
+		fprintf(stderr, "failed to open BPF object\n");
 		return 1;
 	}
 
@@ -212,6 +211,11 @@ int main(int argc, char **argv)
 	err = softirqs_bpf__load(obj);
 	if (err) {
 		fprintf(stderr, "failed to load BPF object: %d\n", err);
+		goto cleanup;
+	}
+
+	if (!obj->bss) {
+		fprintf(stderr, "Memory-mapping BPF maps is supported starting from Linux 5.7, please upgrade.\n");
 		goto cleanup;
 	}
 

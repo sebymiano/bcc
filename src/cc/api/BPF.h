@@ -163,6 +163,22 @@ class BPF {
   }
 
   template <class ValueType>
+  BPFInodeStorageTable<ValueType> get_inode_storage_table(const std::string& name) {
+    TableStorage::iterator it;
+    if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+      return BPFInodeStorageTable<ValueType>(it->second);
+    return BPFInodeStorageTable<ValueType>({});
+  }
+
+  template <class ValueType>
+  BPFTaskStorageTable<ValueType> get_task_storage_table(const std::string& name) {
+    TableStorage::iterator it;
+    if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+      return BPFTaskStorageTable<ValueType>(it->second);
+    return BPFTaskStorageTable<ValueType>({});
+  }
+
+  template <class ValueType>
   BPFCgStorageTable<ValueType> get_cg_storage_table(const std::string& name) {
     TableStorage::iterator it;
     if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
@@ -212,8 +228,13 @@ class BPF {
   BPFStackBuildIdTable get_stackbuildid_table(const std::string &name,
                                               bool use_debug_file = true,
                                               bool check_debug_file_crc = true);
-
-  BPFMapInMapTable get_map_in_map_table(const std::string& name);
+  template <class KeyType>
+  BPFMapInMapTable<KeyType> get_map_in_map_table(const std::string& name){
+      TableStorage::iterator it;
+      if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+        return BPFMapInMapTable<KeyType>(it->second);
+      return BPFMapInMapTable<KeyType>({});
+  }
 
   bool add_module(std::string module);
 
@@ -243,7 +264,7 @@ class BPF {
   int poll_perf_buffer(const std::string& name, int timeout_ms = -1);
 
   StatusTuple load_func(const std::string& func_name, enum bpf_prog_type type,
-                        int& fd);
+                        int& fd, unsigned flags = 0);
   StatusTuple unload_func(const std::string& func_name);
 
   StatusTuple attach_func(int prog_fd, int attachable_fd,

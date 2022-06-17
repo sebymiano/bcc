@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 // Copyright (c) 2020 Wenbo Zhang
 //
-// Based on numamove(8) from from BPF-Perf-Tools-Book by Brendan Gregg.
+// Based on numamove(8) from BPF-Perf-Tools-Book by Brendan Gregg.
 // 8-Jun-2020   Wenbo Zhang   Created this.
 #include <argp.h>
 #include <signal.h>
@@ -20,7 +20,8 @@ static struct env {
 static volatile bool exiting;
 
 const char *argp_program_version = "numamove 0.1";
-const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
+const char *argp_program_bug_address =
+	"https://github.com/iovisor/bcc/tree/master/libbpf-tools";
 const char argp_program_doc[] =
 "Show page migrations of type NUMA misplaced per second.\n"
 "\n"
@@ -31,12 +32,16 @@ const char argp_program_doc[] =
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
+	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
 	{},
 };
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
 	switch (key) {
+	case 'h':
+		argp_state_help(state, stderr, ARGP_HELP_STD_HELP);
+		break;
 	case 'v':
 		env.verbose = true;
 		break;
@@ -46,8 +51,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
-int libbpf_print_fn(enum libbpf_print_level level,
-		    const char *format, va_list args)
+static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	if (level == LIBBPF_DEBUG && !env.verbose)
 		return 0;
@@ -76,18 +80,18 @@ int main(int argc, char **argv)
 	if (err)
 		return err;
 
+	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 	libbpf_set_print(libbpf_print_fn);
-
-	err = bump_memlock_rlimit();
-	if (err) {
-		fprintf(stderr, "failed to increase rlimit: %d\n", err);
-		return 1;
-	}
 
 	obj = numamove_bpf__open_and_load();
 	if (!obj) {
 		fprintf(stderr, "failed to open and/or load BPF object\n");
 		return 1;
+	}
+
+	if (!obj->bss) {
+		fprintf(stderr, "Memory-mapping BPF maps is supported starting from Linux 5.7, please upgrade.\n");
+		goto cleanup;
 	}
 
 	err = numamove_bpf__attach(obj);
@@ -98,18 +102,15 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, sig_handler);
 
-	printf("%-10s %18s %18s\n", "TIME", "NUMA_migrations",
-		"NUMA_migrations_ms");
+	printf("%-10s %18s %18s\n", "TIME", "NUMA_migrations", "NUMA_migrations_ms");
 	while (!exiting) {
 		sleep(1);
 		time(&t);
 		tm = localtime(&t);
 		strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 		printf("%-10s %18lld %18lld\n", ts,
-			__atomic_exchange_n(&obj->bss->num, 0,
-					__ATOMIC_RELAXED),
-			__atomic_exchange_n(&obj->bss->latency, 0,
-					__ATOMIC_RELAXED));
+			__atomic_exchange_n(&obj->bss->num, 0, __ATOMIC_RELAXED),
+			__atomic_exchange_n(&obj->bss->latency, 0, __ATOMIC_RELAXED));
 	}
 
 cleanup:

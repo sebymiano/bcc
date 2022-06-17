@@ -23,11 +23,12 @@ static struct env {
 };
 
 const char *argp_program_version = "biostacks 0.1";
-const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
+const char *argp_program_bug_address =
+	"https://github.com/iovisor/bcc/tree/master/libbpf-tools";
 const char argp_program_doc[] =
 "Tracing block I/O with init stacks.\n"
 "\n"
-"USAGE: biostacks [--help] [-d disk] [-m] [duration]\n"
+"USAGE: biostacks [--help] [-d DISK] [-m] [duration]\n"
 "\n"
 "EXAMPLES:\n"
 "    biostacks              # trace block I/O with init stacks.\n"
@@ -38,6 +39,7 @@ static const struct argp_option opts[] = {
 	{ "disk",  'd', "DISK",  0, "Trace this disk only" },
 	{ "milliseconds", 'm', NULL, 0, "Millisecond histogram" },
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
+	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
 	{},
 };
 
@@ -46,6 +48,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	static int pos_args;
 
 	switch (key) {
+	case 'h':
+		argp_state_help(state, stderr, ARGP_HELP_STD_HELP);
+		break;
 	case 'v':
 		env.verbose = true;
 		break;
@@ -78,8 +83,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
-int libbpf_print_fn(enum libbpf_print_level level,
-		const char *format, va_list args)
+static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	if (level == LIBBPF_DEBUG && !env.verbose)
 		return 0;
@@ -141,17 +145,12 @@ int main(int argc, char **argv)
 	if (err)
 		return err;
 
+	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 	libbpf_set_print(libbpf_print_fn);
-
-	err = bump_memlock_rlimit();
-	if (err) {
-		fprintf(stderr, "failed to increase rlimit: %d\n", err);
-		return 1;
-	}
 
 	obj = biostacks_bpf__open();
 	if (!obj) {
-		fprintf(stderr, "failed to open and/or load BPF ojbect\n");
+		fprintf(stderr, "failed to open BPF object\n");
 		return 1;
 	}
 
@@ -168,6 +167,7 @@ int main(int argc, char **argv)
 			fprintf(stderr, "invaild partition name: not exist\n");
 			goto cleanup;
 		}
+		obj->rodata->filter_dev = true;
 		obj->rodata->targ_dev = partition->dev;
 	}
 
@@ -179,12 +179,10 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	obj->links.blk_account_io_start =
-		bpf_program__attach(obj->progs.blk_account_io_start);
-	err = libbpf_get_error(obj->links.blk_account_io_start);
-	if (err) {
-		fprintf(stderr, "failed to attach blk_account_io_start: %s\n",
-			strerror(err));
+	obj->links.blk_account_io_start = bpf_program__attach(obj->progs.blk_account_io_start);
+	if (!obj->links.blk_account_io_start) {
+		err = -errno;
+		fprintf(stderr, "failed to attach blk_account_io_start: %s\n", strerror(-err));
 		goto cleanup;
 	}
 	ksyms = ksyms__load();
@@ -194,23 +192,19 @@ int main(int argc, char **argv)
 	}
 	if (ksyms__get_symbol(ksyms, "blk_account_io_merge_bio")) {
 		obj->links.blk_account_io_merge_bio =
-			bpf_program__attach(obj->
-					progs.blk_account_io_merge_bio);
-		err = libbpf_get_error(obj->
-				links.blk_account_io_merge_bio);
-		if (err) {
-			fprintf(stderr, "failed to attach "
-				"blk_account_io_merge_bio: %s\n",
-				strerror(err));
+			bpf_program__attach(obj->progs.blk_account_io_merge_bio);
+		if (!obj->links.blk_account_io_merge_bio) {
+			err = -errno;
+			fprintf(stderr, "failed to attach blk_account_io_merge_bio: %s\n",
+				strerror(-err));
 			goto cleanup;
 		}
 	}
-	obj->links.blk_account_io_done =
-		bpf_program__attach(obj->progs.blk_account_io_done);
-	err = libbpf_get_error(obj->links.blk_account_io_done);
-	if (err) {
+	obj->links.blk_account_io_done = bpf_program__attach(obj->progs.blk_account_io_done);
+	if (!obj->links.blk_account_io_done) {
+		err = -errno;
 		fprintf(stderr, "failed to attach blk_account_io_done: %s\n",
-			strerror(err));
+			strerror(-err));
 		goto cleanup;
 	}
 

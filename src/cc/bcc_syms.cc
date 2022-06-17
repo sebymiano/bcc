@@ -116,29 +116,7 @@ ProcSyms::ProcSyms(int pid, struct bcc_symbol_option *option)
   load_modules();
 }
 
-int ProcSyms::_add_load_sections(uint64_t v_addr, uint64_t mem_sz,
-                                 uint64_t file_offset, void *payload) {
-  auto module = static_cast<Module *>(payload);
-  module->ranges_.emplace_back(v_addr, v_addr + mem_sz, file_offset);
-  return 0;
-}
-
-void ProcSyms::load_exe() {
-  std::string exe = ebpf::get_pid_exe(pid_);
-  Module module(exe.c_str(), exe.c_str(), &symbol_option_);
-
-  if (module.type_ != ModuleType::EXEC)
-    return;
-
-
-  bcc_elf_foreach_load_section(exe.c_str(), &_add_load_sections, &module);
-
-  if (!module.ranges_.empty())
-    modules_.emplace_back(std::move(module));
-}
-
 void ProcSyms::load_modules() {
-  load_exe();
   bcc_procutils_each_module(pid_, _add_module, this);
 }
 
@@ -260,7 +238,7 @@ ProcSyms::Module::Module(const char *name, const char *path,
   // Other symbol files
   if (bcc_is_valid_perf_map(path_.c_str()) == 1)
     type_ = ModuleType::PERF_MAP;
-  else if (bcc_elf_is_vdso(path_.c_str()) == 1)
+  else if (bcc_elf_is_vdso(name_.c_str()) == 1)
     type_ = ModuleType::VDSO;
 
   // Will be stored later

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2020 Wenbo Zhang
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
@@ -36,7 +36,7 @@ static __always_inline int trace_connect(struct sock *sk)
 	u32 tgid = bpf_get_current_pid_tgid() >> 32;
 	struct piddata piddata = {};
 
-	if (targ_tgid  && targ_tgid != tgid)
+	if (targ_tgid && targ_tgid != tgid)
 		return 0;
 
 	bpf_get_current_comm(&piddata.comm, sizeof(piddata.comm));
@@ -85,6 +85,7 @@ int BPF_PROG(tcp_rcv_state_process, struct sock *sk)
 			sizeof(event.comm));
 	event.ts_us = ts / 1000;
 	event.tgid = piddatap->tgid;
+	event.lport = sk->__sk_common.skc_num;
 	event.dport = sk->__sk_common.skc_dport;
 	event.af = sk->__sk_common.skc_family;
 	if (event.af == AF_INET) {

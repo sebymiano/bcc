@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2020 Wenbo Zhang
-#include "vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include "llcstat.h"
@@ -36,13 +36,13 @@ int trace_event(__u64 sample_period, bool miss)
 	return 0;
 }
 
-SEC("perf_event/1")
+SEC("perf_event")
 int on_cache_miss(struct bpf_perf_event_data *ctx)
 {
 	return trace_event(ctx->sample_period, true);
 }
 
-SEC("perf_event/2")
+SEC("perf_event")
 int on_cache_ref(struct bpf_perf_event_data *ctx)
 {
 	return trace_event(ctx->sample_period, false);
