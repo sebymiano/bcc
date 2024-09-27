@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright (c) PLUMgrid, Inc.
 # Licensed under the Apache License, Version 2.0 (the "License")
 
@@ -7,16 +7,18 @@ import unittest
 from bcc import BPF
 import multiprocessing
 
+MONITORED_SYSCALL=b"execve"
+
 class TestPercpu(unittest.TestCase):
 
     def setUp(self):
         try:
-            b = BPF(text='BPF_TABLE("percpu_array", u32, u32, stub, 1);')
+            b = BPF(text=b'BPF_PERCPU_ARRAY(stub, u32, 1);')
         except:
             raise unittest.SkipTest("PerCpu unsupported on this kernel")
 
     def test_helper(self):
-        test_prog1 = """
+        test_prog1 = b"""
         BPF_PERCPU_ARRAY(stub_default);
         BPF_PERCPU_ARRAY(stub_type, u64);
         BPF_PERCPU_ARRAY(stub_full, u64, 1024);
@@ -24,8 +26,8 @@ class TestPercpu(unittest.TestCase):
         BPF(text=test_prog1)
 
     def test_u64(self):
-        test_prog1 = """
-        BPF_TABLE("percpu_hash", u32, u64, stats, 1);
+        test_prog1 = b"""
+        BPF_PERCPU_HASH(stats, u32, u64, 1);
         int hello_world(void *ctx) {
             u32 key=0;
             u64 value = 0, *val;
@@ -37,9 +39,9 @@ class TestPercpu(unittest.TestCase):
         }
         """
         bpf_code = BPF(text=test_prog1)
-        stats_map = bpf_code.get_table("stats")
-        event_name = bpf_code.get_syscall_fnname("clone")
-        bpf_code.attach_kprobe(event=event_name, fn_name="hello_world")
+        stats_map = bpf_code.get_table(b"stats")
+        event_name = bpf_code.get_syscall_fnname(MONITORED_SYSCALL)
+        bpf_code.attach_kprobe(event=event_name, fn_name=b"hello_world")
         ini = stats_map.Leaf()
         for i in range(0, multiprocessing.cpu_count()):
             ini[i] = 0
@@ -56,8 +58,8 @@ class TestPercpu(unittest.TestCase):
         bpf_code.detach_kprobe(event_name)
 
     def test_u32(self):
-        test_prog1 = """
-        BPF_TABLE("percpu_array", u32, u32, stats, 1);
+        test_prog1 = b"""
+        BPF_PERCPU_ARRAY(stats, u32, 1);
         int hello_world(void *ctx) {
             u32 key=0;
             u32 value = 0, *val;
@@ -69,9 +71,9 @@ class TestPercpu(unittest.TestCase):
         }
         """
         bpf_code = BPF(text=test_prog1)
-        stats_map = bpf_code.get_table("stats")
-        event_name = bpf_code.get_syscall_fnname("clone")
-        bpf_code.attach_kprobe(event=event_name, fn_name="hello_world")
+        stats_map = bpf_code.get_table(b"stats")
+        event_name = bpf_code.get_syscall_fnname(MONITORED_SYSCALL)
+        bpf_code.attach_kprobe(event=event_name, fn_name=b"hello_world")
         ini = stats_map.Leaf()
         for i in range(0, multiprocessing.cpu_count()):
             ini[i] = 0
@@ -88,12 +90,12 @@ class TestPercpu(unittest.TestCase):
         bpf_code.detach_kprobe(event_name)
 
     def test_struct_custom_func(self):
-        test_prog2 = """
+        test_prog2 = b"""
         typedef struct counter {
         u32 c1;
         u32 c2;
         } counter;
-        BPF_TABLE("percpu_hash", u32, counter, stats, 1);
+        BPF_PERCPU_HASH(stats, u32, counter, 1);
         int hello_world(void *ctx) {
             u32 key=0;
             counter value = {0,0}, *val;
@@ -106,10 +108,10 @@ class TestPercpu(unittest.TestCase):
         }
         """
         bpf_code = BPF(text=test_prog2)
-        stats_map = bpf_code.get_table("stats",
+        stats_map = bpf_code.get_table(b"stats",
                 reducer=lambda x,y: stats_map.sLeaf(x.c1+y.c1))
-        event_name = bpf_code.get_syscall_fnname("clone")
-        bpf_code.attach_kprobe(event=event_name, fn_name="hello_world")
+        event_name = bpf_code.get_syscall_fnname(MONITORED_SYSCALL)
+        bpf_code.attach_kprobe(event=event_name, fn_name=b"hello_world")
         ini = stats_map.Leaf()
         for i in ini:
             i = stats_map.sLeaf(0,0)

@@ -38,10 +38,10 @@ struct mod_info;
 #define STT_GNU_IFUNC 10
 #endif
 
-#if defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#if defined(__powerpc64__) && defined(_CALL_ELF) && _CALL_ELF == 2
 // Indicate if the Local Entry Point (LEP) should be used as a symbol's
 // start address
-#define STT_PPC64LE_SYM_LEP 31
+#define STT_PPC64_ELFV2_SYM_LEP 31
 #endif
 
 static const uint32_t BCC_SYM_ALL_TYPES = 65535;
@@ -101,6 +101,30 @@ int bcc_resolve_symname(const char *module, const char *symname,
                         const uint64_t addr, int pid,
                         struct bcc_symbol_option* option,
                         struct bcc_symbol *sym);
+
+/* Calculate the global address for 'offset' in a shared object loaded into
+ * a process
+ *
+ * Need to know (start_addr, file_offset) pairs for the /proc/PID/maps module
+ * entry containing the offset and the elf section containing the module's
+ * .text
+ */
+uint64_t __so_calc_global_addr(uint64_t mod_start_addr,
+                               uint64_t mod_file_offset,
+                               uint64_t elf_sec_start_addr,
+                               uint64_t elf_sec_file_offset, uint64_t offset);
+
+/* Given a global address which falls within a shared object's mapping in a
+ * process, calculate the corresponding 'offset' in the .so
+ *
+ * Need to know (start_addr, file_offset) pairs for the /proc/PID/maps module
+ * entry containing the offset and the elf section containing the module's
+ * .text
+ */
+uint64_t __so_calc_mod_offset(uint64_t mod_start_addr, uint64_t mod_file_offset,
+                              uint64_t elf_sec_start_addr,
+                              uint64_t elf_sec_file_offset,
+                              uint64_t global_addr);
 
 #ifdef __cplusplus
 }

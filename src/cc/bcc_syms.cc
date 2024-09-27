@@ -14,38 +14,104 @@
  * limitations under the License.
  */
 
+#include "bcc_syms.h"
+
 #include <cxxabi.h>
-#include <cstring>
 #include <fcntl.h>
+#include <limits.h>
 #include <linux/elf.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <unistd.h>
+
 #include <cstdio>
+#include <cstring>
 
 #include "bcc_elf.h"
 #include "bcc_perf_map.h"
 #include "bcc_proc.h"
-#include "bcc_syms.h"
 #include "common.h"
+#include "syms.h"
 #include "vendor/tinyformat.hpp"
 
-#include "syms.h"
+ProcSyms::ModulePath::ModulePath(const std::string &ns_path, int root_fd,
+                                 int pid, bool enter_ns) {
+  if (!enter_ns) {
+    path_ = ns_path;
+    proc_root_path_ = ns_path;
+    return;
+  }
+  proc_root_path_ = tfm::format("/proc/%d/root%s", pid, ns_path);
+  // filename for openat must not contain any starting slashes, otherwise
+  // it would get treated as an absolute path
+  std::string trimmed_path;
+  size_t non_slash_pos;
+  for (non_slash_pos = 0;
+       non_slash_pos < ns_path.size() && ns_path[non_slash_pos] == '/';
+       non_slash_pos++)
+    ;
+  trimmed_path = ns_path.substr(non_slash_pos);
+  fd_ = openat(root_fd, trimmed_path.c_str(), O_RDONLY);
+  if (fd_ > 0)
+    path_ = tfm::format("/proc/self/fd/%d", fd_);
+  else
+    // openat failed, fall back to /proc/.../root path
+    path_ = proc_root_path_;
+}
 
-ino_t ProcStat::getinode_() {
+bool ProcStat::getinode_(ino_t &inode) {
   struct stat s;
-  return (!stat(procfs_.c_str(), &s)) ? s.st_ino : -1;
+  if (!stat(procfs_.c_str(), &s)) {
+    inode = s.st_ino;
+    return true;
+  } else {
+    return false;
+  }
+}
+
+bool ProcStat::refresh_root() {
+  // try to current root and mount namespace for process
+  char current_root[PATH_MAX], current_mount_ns[PATH_MAX];
+  if (readlink(root_symlink_.c_str(), current_root, PATH_MAX) < 0 ||
+      readlink(mount_ns_symlink_.c_str(), current_mount_ns, PATH_MAX) < 0)
+    // readlink failed, process might not exist anymore; keep old fd
+    return false;
+
+  // check if root fd is up to date
+  if (root_fd_ != -1 && current_root == root_ && current_mount_ns == mount_ns_)
+    return false;
+
+  root_ = current_root;
+  mount_ns_ = current_mount_ns;
+
+  // either root fd is invalid or process root and/or mount namespace changed;
+  // re-open root note: when /proc/.../root changes, the open file descriptor
+  // still refers to the old one
+  int original_root_fd = root_fd_;
+  root_fd_ = open(root_symlink_.c_str(), O_PATH);
+  if (root_fd_ == -1)
+    std::cerr << "Opening " << root_symlink_ << " failed: " << strerror(errno)
+              << std::endl;
+  if (original_root_fd > 0)
+    close(original_root_fd);
+  return original_root_fd != root_fd_;
 }
 
 bool ProcStat::is_stale() {
-  ino_t cur_inode = getinode_();
-  return (cur_inode > 0) && (cur_inode != inode_);
+  ino_t cur_inode;
+  return getinode_(cur_inode) && (cur_inode != inode_) && refresh_root();
 }
 
 ProcStat::ProcStat(int pid)
-    : procfs_(tfm::format("/proc/%d/exe", pid)), inode_(getinode_()) {}
+    : procfs_(tfm::format("/proc/%d/exe", pid)),
+      root_symlink_(tfm::format("/proc/%d/root", pid)),
+      mount_ns_symlink_(tfm::format("/proc/%d/ns/mnt", pid)) {
+  getinode_(inode_);
+  refresh_root();
+}
 
 void KSyms::_add_symbol(const char *symname, const char *modname, uint64_t addr, void *p) {
   KSyms *ks = static_cast<KSyms *>(p);
@@ -116,29 +182,7 @@ ProcSyms::ProcSyms(int pid, struct bcc_symbol_option *option)
   load_modules();
 }
 
-int ProcSyms::_add_load_sections(uint64_t v_addr, uint64_t mem_sz,
-                                 uint64_t file_offset, void *payload) {
-  auto module = static_cast<Module *>(payload);
-  module->ranges_.emplace_back(v_addr, v_addr + mem_sz, file_offset);
-  return 0;
-}
-
-void ProcSyms::load_exe() {
-  std::string exe = ebpf::get_pid_exe(pid_);
-  Module module(exe.c_str(), exe.c_str(), &symbol_option_);
-
-  if (module.type_ != ModuleType::EXEC)
-    return;
-
-
-  bcc_elf_foreach_load_section(exe.c_str(), &_add_load_sections, &module);
-
-  if (!module.ranges_.empty())
-    modules_.emplace_back(std::move(module));
-}
-
 void ProcSyms::load_modules() {
-  load_exe();
   bcc_procutils_each_module(pid_, _add_module, this);
 }
 
@@ -150,8 +194,9 @@ void ProcSyms::refresh() {
 
 int ProcSyms::_add_module(mod_info *mod, int enter_ns, void *payload) {
   ProcSyms *ps = static_cast<ProcSyms *>(payload);
-  std::string ns_relative_path = tfm::format("/proc/%d/root%s", ps->pid_, mod->name);
-  const char *modpath = enter_ns && ps->pid_ != -1 ? ns_relative_path.c_str() : mod->name;
+  std::shared_ptr<ModulePath> modpath =
+      std::make_shared<ModulePath>(mod->name, ps->procstat_.get_root_fd(),
+                                   ps->pid_, enter_ns && ps->pid_ != -1);
   auto it = std::find_if(
       ps->modules_.begin(), ps->modules_.end(),
       [=](const ProcSyms::Module &m) { return m.name_ == mod->name; });
@@ -163,14 +208,17 @@ int ProcSyms::_add_module(mod_info *mod, int enter_ns, void *payload) {
     // It only gives the mmap offset. We need the real offset for symbol
     // lookup.
     if (module.type_ == ModuleType::SO) {
-      if (bcc_elf_get_text_scn_info(modpath, &module.elf_so_addr_,
+      if (bcc_elf_get_text_scn_info(modpath->path(), &module.elf_so_addr_,
                                     &module.elf_so_offset_) < 0) {
-        fprintf(stderr, "WARNING: Couldn't find .text section in %s\n", modpath);
-        fprintf(stderr, "WARNING: BCC can't handle sym look ups for %s", modpath);
+        fprintf(stderr, "WARNING: Couldn't find .text section in %s\n",
+                modpath->alt_path());
+        fprintf(stderr, "WARNING: BCC can't handle sym look ups for %s",
+                modpath->alt_path());
       }
     }
 
-    if (!bcc_is_perf_map(modpath) || module.type_ != ModuleType::UNKNOWN)
+    if (!bcc_is_perf_map(modpath->path()) ||
+        module.type_ != ModuleType::UNKNOWN)
       // Always add the module even if we can't read it, so that we could
       // report correct module name. Unless it's a perf map that we only
       // add readable ones.
@@ -241,14 +289,14 @@ bool ProcSyms::resolve_name(const char *module, const char *name,
   return false;
 }
 
-ProcSyms::Module::Module(const char *name, const char *path,
-    struct bcc_symbol_option *option)
+ProcSyms::Module::Module(const char *name, std::shared_ptr<ModulePath> path,
+                         struct bcc_symbol_option *option)
     : name_(name),
       path_(path),
       loaded_(false),
       symbol_option_(option),
       type_(ModuleType::UNKNOWN) {
-  int elf_type = bcc_elf_get_type(path_.c_str());
+  int elf_type = bcc_elf_get_type(path_->path());
   // The Module is an ELF file
   if (elf_type >= 0) {
     if (elf_type == ET_EXEC)
@@ -258,9 +306,9 @@ ProcSyms::Module::Module(const char *name, const char *path,
     return;
   }
   // Other symbol files
-  if (bcc_is_valid_perf_map(path_.c_str()) == 1)
+  if (bcc_is_valid_perf_map(path_->path()) == 1)
     type_ = ModuleType::PERF_MAP;
-  else if (bcc_elf_is_vdso(path_.c_str()) == 1)
+  else if (bcc_elf_is_vdso(path_->path()) == 1)
     type_ = ModuleType::VDSO;
 
   // Will be stored later
@@ -294,12 +342,13 @@ void ProcSyms::Module::load_sym_table() {
     return;
 
   if (type_ == ModuleType::PERF_MAP)
-    bcc_perf_map_foreach_sym(path_.c_str(), _add_symbol, this);
+    bcc_perf_map_foreach_sym(path_->path(), _add_symbol, this);
   if (type_ == ModuleType::EXEC || type_ == ModuleType::SO) {
     if (symbol_option_->lazy_symbolize)
-      bcc_elf_foreach_sym_lazy(path_.c_str(), _add_symbol_lazy, symbol_option_, this);
+      bcc_elf_foreach_sym_lazy(path_->path(), _add_symbol_lazy, symbol_option_,
+                               this);
     else
-      bcc_elf_foreach_sym(path_.c_str(), _add_symbol, symbol_option_, this);
+      bcc_elf_foreach_sym(path_->path(), _add_symbol, symbol_option_, this);
   }
   if (type_ == ModuleType::VDSO)
     bcc_elf_foreach_vdso_sym(_add_symbol, this);
@@ -311,11 +360,8 @@ bool ProcSyms::Module::contains(uint64_t addr, uint64_t &offset) const {
   for (const auto &range : ranges_) {
     if (addr >= range.start && addr < range.end) {
       if (type_ == ModuleType::SO || type_ == ModuleType::VDSO) {
-        // Offset within the mmap
-        offset = addr - range.start + range.file_offset;
-
-        // Offset within the ELF for SO symbol lookup
-        offset += (elf_so_addr_ - elf_so_offset_);
+        offset = __so_calc_mod_offset(range.start, range.file_offset,
+                                      elf_so_addr_, elf_so_offset_, addr);
       } else {
         offset = addr;
       }
@@ -352,9 +398,13 @@ bool ProcSyms::Module::find_name(const char *symname, uint64_t *addr) {
   };
 
   if (type_ == ModuleType::PERF_MAP)
-    bcc_perf_map_foreach_sym(path_.c_str(), cb, &payload);
-  if (type_ == ModuleType::EXEC || type_ == ModuleType::SO)
-    bcc_elf_foreach_sym(path_.c_str(), cb, symbol_option_, &payload);
+    bcc_perf_map_foreach_sym(path_->path(), cb, &payload);
+  if (type_ == ModuleType::EXEC || type_ == ModuleType::SO) {
+    bcc_elf_foreach_sym(path_->path(), cb, symbol_option_, &payload);
+    if (path_->path() != path_->alt_path())
+      // some features (e.g. some kinds of debug info) don't work with /proc/self/fd/... path
+      bcc_elf_foreach_sym(path_->alt_path(), cb, symbol_option_, &payload);
+  }
   if (type_ == ModuleType::VDSO)
     bcc_elf_foreach_vdso_sym(cb, &payload);
 
@@ -404,9 +454,9 @@ bool ProcSyms::Module::find_addr(uint64_t offset, struct bcc_symbol *sym) {
       // Resolve and cache the symbol name if necessary
       if (!it->is_name_resolved) {
         std::string sym_name(it->data.name_idx.str_len + 1, '\0');
-        if (bcc_elf_symbol_str(path_.c_str(), it->data.name_idx.section_idx,
-              it->data.name_idx.str_table_idx, &sym_name[0], sym_name.size(),
-              it->data.name_idx.debugfile))
+        if (bcc_elf_symbol_str(path_->path(), it->data.name_idx.section_idx,
+                               it->data.name_idx.str_table_idx, &sym_name[0],
+                               sym_name.size(), it->data.name_idx.debugfile))
           break;
 
         it->data.name = &*(symnames_.emplace(std::move(sym_name)).first);
@@ -641,9 +691,26 @@ file_match:
   return -1;
 }
 
+uint64_t __so_calc_global_addr(uint64_t mod_start_addr,
+                               uint64_t mod_file_offset,
+                               uint64_t elf_sec_start_addr,
+                               uint64_t elf_sec_file_offset, uint64_t offset) {
+  return offset + (mod_start_addr - mod_file_offset) -
+         (elf_sec_start_addr - elf_sec_file_offset);
+}
+
+uint64_t __so_calc_mod_offset(uint64_t mod_start_addr, uint64_t mod_file_offset,
+                              uint64_t elf_sec_start_addr,
+                              uint64_t elf_sec_file_offset,
+                              uint64_t global_addr) {
+  return global_addr - (mod_start_addr - mod_file_offset) +
+         (elf_sec_start_addr - elf_sec_file_offset);
+}
+
 int bcc_resolve_global_addr(int pid, const char *module, const uint64_t address,
                             uint8_t inode_match_only, uint64_t *global) {
   struct stat s;
+  uint64_t elf_so_addr, elf_so_offset;
   if (stat(module, &s))
     return -1;
 
@@ -654,7 +721,11 @@ int bcc_resolve_global_addr(int pid, const char *module, const uint64_t address,
       mod.start == 0x0)
     return -1;
 
-  *global = mod.start - mod.file_offset + address;
+  if (bcc_elf_get_text_scn_info(module, &elf_so_addr, &elf_so_offset) < 0)
+    return -1;
+
+  *global = __so_calc_global_addr(mod.start, mod.file_offset, elf_so_addr,
+                                  elf_so_offset, address);
   return 0;
 }
 
@@ -707,12 +778,13 @@ int bcc_resolve_symname(const char *module, const char *symname,
                         const uint64_t addr, int pid,
                         struct bcc_symbol_option *option,
                         struct bcc_symbol *sym) {
+  int module_type;
   static struct bcc_symbol_option default_option = {
     .use_debug_file = 1,
     .check_debug_file_crc = 1,
     .lazy_symbolize = 1,
-#if defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    .use_symbol_type = BCC_SYM_ALL_TYPES | (1 << STT_PPC64LE_SYM_LEP),
+#if defined(__powerpc64__) && defined(_CALL_ELF) && _CALL_ELF == 2
+    .use_symbol_type = BCC_SYM_ALL_TYPES | (1 << STT_PPC64_ELFV2_SYM_LEP),
 #else
     .use_symbol_type = BCC_SYM_ALL_TYPES,
 #endif
@@ -730,7 +802,7 @@ int bcc_resolve_symname(const char *module, const char *symname,
   }
   if (sym->module == NULL)
     return -1;
-  if (pid != 0 && pid != -1) {
+  if (pid != 0 && pid != -1 && strstr(sym->module, "/proc") != sym->module){
     char *temp = (char*)sym->module;
     sym->module = strdup(tfm::format("/proc/%d/root%s", pid, sym->module).c_str());
     free(temp);
@@ -747,11 +819,10 @@ int bcc_resolve_symname(const char *module, const char *symname,
   if (sym->offset == 0x0)
     goto invalid_module;
 
-  // For executable (ET_EXEC) binaries, translate the virtual address
-  // to physical address in the binary file.
-  // For shared object binaries (ET_DYN), the address from symbol table should
-  // already be physical address in the binary file.
-  if (bcc_elf_get_type(sym->module) == ET_EXEC) {
+  // For executable (ET_EXEC) binaries and shared objects (ET_DYN), translate
+  // the virtual address to physical address in the binary file.
+  module_type = bcc_elf_get_type(sym->module);
+  if (module_type == ET_EXEC || module_type == ET_DYN) {
     struct load_addr_t addr = {
       .target_addr = sym->offset,
       .binary_addr = 0x0,

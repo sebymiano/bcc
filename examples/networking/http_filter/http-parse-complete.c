@@ -100,7 +100,7 @@ int http_filter(struct __sk_buff *skb) {
 	unsigned long p[7];
 	int i = 0;
 	for (i = 0; i < 7; i++) {
-		p[i] = load_byte(skb , payload_offset + i);
+		p[i] = load_byte(skb, payload_offset + i);
 	}
 
 	//find a match with an HTTP message
@@ -138,7 +138,7 @@ int http_filter(struct __sk_buff *skb) {
 	}
 	goto DROP;
 
-	//keep the packet and send it to userspace retruning -1
+	//keep the packet and send it to userspace returning -1
 	HTTP_MATCH:
 	//if not already present, insert into map <Key, Leaf>
 	sessions.lookup_or_try_init(&key,&zero);

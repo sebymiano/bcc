@@ -11,11 +11,13 @@ from bcc import BPF
 import pyroute2
 import time
 import sys
+import ctypes
 
 flags = 0
 def usage():
     print("Usage: {0} [-S] <ifdev>".format(sys.argv[0]))
     print("       -S: use skb mode\n")
+    print("       -D: use driver mode\n")
     print("       -H: use hardware offload mode\n")
     print("e.g.: {0} eth0\n".format(sys.argv[0]))
     exit(1)
@@ -33,12 +35,15 @@ maptype = "percpu_array"
 if len(sys.argv) == 3:
     if "-S" in sys.argv:
         # XDP_FLAGS_SKB_MODE
-        flags |= (1 << 1)
+        flags |= BPF.XDP_FLAGS_SKB_MODE
+    if "-D" in sys.argv:
+        # XDP_FLAGS_DRV_MODE
+        flags |= BPF.XDP_FLAGS_DRV_MODE
     if "-H" in sys.argv:
         # XDP_FLAGS_HW_MODE
         maptype = "array"
-        offload_device = device
-        flags |= (1 << 3)
+        offload_device = ctypes.c_char_p(device.encode('utf-8'))
+        flags |= BPF.XDP_FLAGS_HW_MODE
 
 mode = BPF.XDP
 #mode = BPF.SCHED_CLS
@@ -52,7 +57,6 @@ else:
 
 # load BPF program
 b = BPF(text = """
-#define KBUILD_MODNAME "foo"
 #include <uapi/linux/bpf.h>
 #include <linux/in.h>
 #include <linux/if_ether.h>
@@ -158,7 +162,7 @@ while 1:
         time.sleep(1)
     except KeyboardInterrupt:
         print("Removing filter from device")
-        break;
+        break
 
 if mode == BPF.XDP:
     b.remove_xdp(device, flags)

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # @lint-avoid-python-3-compatibility-imports
 #
 # statsnoop Trace stat() syscalls.
@@ -10,7 +10,8 @@
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
 # 08-Feb-2016   Brendan Gregg   Created this.
-# 17-Feb-2016   Allan McAleavy updated for BPF_PERF_OUTPUT
+# 17-Feb-2016   Allan McAleavy  updated for BPF_PERF_OUTPUT
+# 29-Nov-2022   Rocky Xing      Added stat() variants.
 
 from __future__ import print_function
 from bcc import BPF
@@ -56,42 +57,53 @@ struct data_t {
     char fname[NAME_MAX];
 };
 
-BPF_HASH(args_filename, u32, const char *);
 BPF_HASH(infotmp, u32, struct val_t);
 BPF_PERF_OUTPUT(events);
 
-int syscall__entry(struct pt_regs *ctx, const char __user *filename)
+static int trace_entry(struct pt_regs *ctx, const char __user *filename)
 {
     struct val_t val = {};
-    u32 pid = bpf_get_current_pid_tgid();
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    u32 tid = (u32)pid_tgid;
 
     FILTER
     val.fname = filename;
-    infotmp.update(&pid, &val);
+    infotmp.update(&tid, &val);
 
     return 0;
 };
 
+int syscall__stat_entry(struct pt_regs *ctx, const char __user *filename)
+{
+    return trace_entry(ctx, filename);
+}
+
+int syscall__statx_entry(struct pt_regs *ctx, int dfd, const char __user *filename)
+{
+    return trace_entry(ctx, filename);
+}
+
 int trace_return(struct pt_regs *ctx)
 {
-    u32 pid = bpf_get_current_pid_tgid();
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 tid = (u32)pid_tgid;
     struct val_t *valp;
 
-    valp = infotmp.lookup(&pid);
+    valp = infotmp.lookup(&tid);
     if (valp == 0) {
         // missed entry
         return 0;
     }
 
-    struct data_t data = {.pid = pid};
-    bpf_probe_read(&data.fname, sizeof(data.fname), (void *)valp->fname);
+    struct data_t data = {.pid = pid_tgid >> 32};
+    bpf_probe_read_user(&data.fname, sizeof(data.fname), (void *)valp->fname);
     bpf_get_current_comm(&data.comm, sizeof(data.comm));
     data.ts_ns = bpf_ktime_get_ns();
     data.ret = PT_REGS_RC(ctx);
 
     events.perf_submit(ctx, &data, sizeof(data));
-    infotmp.delete(&pid);
-    args_filename.delete(&pid);
+    infotmp.delete(&tid);
 
     return 0;
 }
@@ -113,20 +125,22 @@ b = BPF(text=bpf_text)
 # system calls but the name of the actual entry point may
 # be different for which we must check if the entry points
 # actually exist before attaching the probes
-syscall_fnname = b.get_syscall_fnname("stat")
-if BPF.ksymname(syscall_fnname) != -1:
-    b.attach_kprobe(event=syscall_fnname, fn_name="syscall__entry")
-    b.attach_kretprobe(event=syscall_fnname, fn_name="trace_return")
+def try_attach_syscall_probes(syscall):
+    syscall_fnname = b.get_syscall_fnname(syscall)
+    if BPF.ksymname(syscall_fnname) != -1:
+        if syscall in ["statx", "fstatat64", "newfstatat"]:
+            b.attach_kprobe(event=syscall_fnname, fn_name="syscall__statx_entry")
+        else:
+            b.attach_kprobe(event=syscall_fnname, fn_name="syscall__stat_entry")
+        b.attach_kretprobe(event=syscall_fnname, fn_name="trace_return")
 
-syscall_fnname = b.get_syscall_fnname("statfs")
-if BPF.ksymname(syscall_fnname) != -1:
-    b.attach_kprobe(event=syscall_fnname, fn_name="syscall__entry")
-    b.attach_kretprobe(event=syscall_fnname, fn_name="trace_return")
-
-syscall_fnname = b.get_syscall_fnname("newstat")
-if BPF.ksymname(syscall_fnname) != -1:
-    b.attach_kprobe(event=syscall_fnname, fn_name="syscall__entry")
-    b.attach_kretprobe(event=syscall_fnname, fn_name="trace_return")
+try_attach_syscall_probes("stat")
+try_attach_syscall_probes("statx")
+try_attach_syscall_probes("statfs")
+try_attach_syscall_probes("newstat")
+try_attach_syscall_probes("newlstat")
+try_attach_syscall_probes("fstatat64")
+try_attach_syscall_probes("newfstatat")
 
 start_ts = 0
 prev_ts = 0
@@ -135,7 +149,7 @@ delta = 0
 # header
 if args.timestamp:
     print("%-14s" % ("TIME(s)"), end="")
-print("%-6s %-16s %4s %3s %s" % ("PID", "COMM", "FD", "ERR", "PATH"))
+print("%-7s %-16s %4s %3s %s" % ("PID", "COMM", "FD", "ERR", "PATH"))
 
 # process event
 def print_event(cpu, data, size):
@@ -147,6 +161,8 @@ def print_event(cpu, data, size):
 
     # split return value into FD and errno columns
     if event.ret >= 0:
+        if args.failed:
+            return
         fd_s = event.ret
         err = 0
     else:
@@ -159,7 +175,7 @@ def print_event(cpu, data, size):
     if args.timestamp:
         print("%-14.9f" % (float(event.ts_ns - start_ts) / 1000000000), end="")
 
-    print("%-6d %-16s %4d %3d %s" % (event.pid,
+    print("%-7d %-16s %4d %3d %s" % (event.pid,
         event.comm.decode('utf-8', 'replace'), fd_s, err,
         event.fname.decode('utf-8', 'replace')))
 

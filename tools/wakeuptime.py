@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # wakeuptime    Summarize sleep to wakeup time by waker kernel stack
 #               For Linux, uses BCC, eBPF.
@@ -9,11 +9,13 @@
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
 # 14-Jan-2016	Brendan Gregg	Created this.
+# 03-Apr-2023	Rocky Xing   	Modified the order of stack output.
+# 04-Apr-2023   Rocky Xing      Updated default stack storage size.
 
 from __future__ import print_function
 from bcc import BPF
 from bcc.utils import printb
-from time import sleep, strftime
+from time import sleep
 import argparse
 import signal
 import errno
@@ -57,10 +59,10 @@ parser.add_argument("-v", "--verbose", action="store_true",
     help="show raw addresses")
 parser.add_argument("-f", "--folded", action="store_true",
     help="output folded format")
-parser.add_argument("--stack-storage-size", default=1024,
+parser.add_argument("--stack-storage-size", default=16384,
     type=positive_nonzero_int,
     help="the number of unique stack traces that can be stored and "
-         "displayed (default 1024)")
+         "displayed (default 16384)")
 parser.add_argument("duration", nargs="?", default=99999999,
     type=positive_nonzero_int,
     help="duration of trace, in seconds")
@@ -102,8 +104,10 @@ BPF_HASH(counts, struct key_t);
 BPF_HASH(start, u32);
 BPF_STACK_TRACE(stack_traces, STACK_STORAGE_SIZE);
 
-int offcpu(struct pt_regs *ctx) {
-    u32 pid = bpf_get_current_pid_tgid();
+static int offcpu_sched_switch() {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    u32 tid = (u32)pid_tgid;
     struct task_struct *p = (struct task_struct *) bpf_get_current_task();
     u64 ts;
 
@@ -111,18 +115,19 @@ int offcpu(struct pt_regs *ctx) {
         return 0;
 
     ts = bpf_ktime_get_ns();
-    start.update(&pid, &ts);
+    start.update(&tid, &ts);
     return 0;
 }
 
-int waker(struct pt_regs *ctx, struct task_struct *p) {
-    u32 pid = p->pid;
+static int wakeup(ARG0, struct task_struct *p) {
+    u32 pid = p->tgid;
+    u32 tid = p->pid;
     u64 delta, *tsp, ts;
 
-    tsp = start.lookup(&pid);
+    tsp = start.lookup(&tid);
     if (tsp == 0)
         return 0;        // missed start
-    start.delete(&pid);
+    start.delete(&tid);
 
     if (FILTER)
         return 0;
@@ -136,13 +141,45 @@ int waker(struct pt_regs *ctx, struct task_struct *p) {
     struct key_t key = {};
 
     key.w_k_stack_id = stack_traces.get_stackid(ctx, 0);
-    bpf_probe_read(&key.target, sizeof(key.target), p->comm);
+    bpf_probe_read_kernel(&key.target, sizeof(key.target), p->comm);
     bpf_get_current_comm(&key.waker, sizeof(key.waker));
 
-    counts.increment(key, delta);
+    counts.atomic_increment(key, delta);
     return 0;
 }
 """
+
+bpf_text_kprobe = """
+int offcpu(struct pt_regs *ctx) {
+    return offcpu_sched_switch();
+}
+
+int waker(struct pt_regs *ctx, struct task_struct *p) {
+    return wakeup(ctx, p);
+}
+"""
+
+bpf_text_raw_tp = """
+RAW_TRACEPOINT_PROBE(sched_switch)
+{
+    // TP_PROTO(bool preempt, struct task_struct *prev, struct task_struct *next)
+    return offcpu_sched_switch();
+}
+
+RAW_TRACEPOINT_PROBE(sched_wakeup)
+{
+    // TP_PROTO(struct task_struct *p)
+    struct task_struct *p = (struct task_struct *)ctx->args[0];
+    return wakeup(ctx, p);
+}
+"""
+
+is_supported_raw_tp = BPF.support_raw_tracepoint()
+if is_supported_raw_tp:
+    bpf_text += bpf_text_raw_tp
+else:
+    bpf_text += bpf_text_kprobe
+
 if args.pid:
     filter = 'pid != %s' % args.pid
 elif args.useronly:
@@ -150,6 +187,12 @@ elif args.useronly:
 else:
     filter = '0'
 bpf_text = bpf_text.replace('FILTER', filter)
+
+if is_supported_raw_tp:
+    arg0 = 'struct bpf_raw_tracepoint_args *ctx'
+else:
+    arg0 = 'struct pt_regs *ctx'
+bpf_text = bpf_text.replace('ARG0', arg0)
 
 # set stack storage size
 bpf_text = bpf_text.replace('STACK_STORAGE_SIZE', str(args.stack_storage_size))
@@ -163,12 +206,17 @@ if debug or args.ebpf:
 
 # initialize BPF
 b = BPF(text=bpf_text)
-b.attach_kprobe(event="schedule", fn_name="offcpu")
-b.attach_kprobe(event="try_to_wake_up", fn_name="waker")
-matched = b.num_open_kprobes()
-if matched == 0:
-    print("0 functions traced. Exiting.")
-    exit()
+if not is_supported_raw_tp:
+    b.attach_kprobe(event="schedule", fn_name="offcpu")
+    b.attach_kprobe(event="try_to_wake_up", fn_name="waker")
+    matched = b.num_open_kprobes()
+    if matched == 0:
+        print("0 functions traced. Exiting.")
+        exit()
+
+# check whether hash table batch ops is supported
+htab_batch_ops = True if BPF.kernel_struct_has_field(b'bpf_map_ops',
+        b'map_lookup_and_delete_batch') == 1 else False
 
 # header
 if not folded:
@@ -192,7 +240,9 @@ while (1):
     has_enomem = False
     counts = b.get_table("counts")
     stack_traces = b.get_table("stack_traces")
-    for k, v in sorted(counts.items(), key=lambda counts: counts[1].value):
+    for k, v in sorted(counts.items_lookup_and_delete_batch()
+                        if htab_batch_ops else counts.items(),
+                        key=lambda counts: counts[1].value):
         # handle get_stackid errors
         # check for an ENOMEM error
         if k.w_k_stack_id == -errno.ENOMEM:
@@ -200,24 +250,26 @@ while (1):
             continue
 
         waker_kernel_stack = [] if k.w_k_stack_id < 1 else \
-            reversed(list(stack_traces.walk(k.w_k_stack_id))[1:])
+            list(stack_traces.walk(k.w_k_stack_id))[1:]
 
         if folded:
             # print folded stack output
             line = \
                 [k.waker] + \
                 [b.ksym(addr)
-                    for addr in reversed(list(waker_kernel_stack))] + \
+                    for addr in reversed(waker_kernel_stack)] + \
                 [k.target]
             printb(b"%s %d" % (b";".join(line), v.value))
         else:
             # print default multi-line stack output
             printb(b"    %-16s %s" % (b"target:", k.target))
             for addr in waker_kernel_stack:
-                printb(b"    %-16x %s" % (addr, b.ksym(addr)))
+                printb(b"    %-16x %s" % (addr, b.ksym(addr, False, True)))
             printb(b"    %-16s %s" % (b"waker:", k.waker))
             print("        %d\n" % v.value)
-    counts.clear()
+
+    if not htab_batch_ops:
+        counts.clear()
 
     if missing_stacks > 0:
         enomem_str = " Consider increasing --stack-storage-size."

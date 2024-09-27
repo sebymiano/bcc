@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # @lint-avoid-python-3-compatibility-imports
 #
 # dcsnoop   Trace directory entry cache (dcache) lookups.
@@ -84,13 +84,13 @@ void submit_event(struct pt_regs *ctx, void *name, int type, u32 pid)
         .type = type,
     };
     bpf_get_current_comm(&data.comm, sizeof(data.comm));
-    bpf_probe_read(&data.filename, sizeof(data.filename), name);
+    bpf_probe_read_kernel(&data.filename, sizeof(data.filename), name);
     events.perf_submit(ctx, &data, sizeof(data));
 }
 
 int trace_fast(struct pt_regs *ctx, struct nameidata *nd, struct path *path)
 {
-    u32 pid = bpf_get_current_pid_tgid();
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
     submit_event(ctx, (void *)nd->last.name, LOOKUP_REFERENCE, pid);
     return 1;
 }
@@ -98,26 +98,34 @@ int trace_fast(struct pt_regs *ctx, struct nameidata *nd, struct path *path)
 int kprobe__d_lookup(struct pt_regs *ctx, const struct dentry *parent,
     const struct qstr *name)
 {
-    u32 pid = bpf_get_current_pid_tgid();
+    u32 tid = bpf_get_current_pid_tgid();
     struct entry_t entry = {};
     const char *fname = name->name;
     if (fname) {
-        bpf_probe_read(&entry.name, sizeof(entry.name), (void *)fname);
+        bpf_probe_read_kernel(&entry.name, sizeof(entry.name), (void *)fname);
     }
-    entrybypid.update(&pid, &entry);
+    entrybypid.update(&tid, &entry);
     return 0;
 }
 
 int kretprobe__d_lookup(struct pt_regs *ctx)
 {
-    u32 pid = bpf_get_current_pid_tgid();
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    u32 tid = (u32)pid_tgid;
     struct entry_t *ep;
-    ep = entrybypid.lookup(&pid);
-    if (ep == 0 || PT_REGS_RC(ctx) != 0) {
-        return 0;   // missed entry or lookup didn't fail
+
+    ep = entrybypid.lookup(&tid);
+    if (ep == 0) {
+        return 0;   // missed entry
     }
+    if (PT_REGS_RC(ctx) != 0) {
+        entrybypid.delete(&tid);
+        return 0;   // lookup didn't fail
+    }
+
     submit_event(ctx, (void *)ep->name, LOOKUP_MISS, pid);
-    entrybypid.delete(&pid);
+    entrybypid.delete(&tid);
     return 0;
 }
 """
@@ -129,7 +137,7 @@ if args.ebpf:
 # initialize BPF
 b = BPF(text=bpf_text)
 if args.all:
-    b.attach_kprobe(event="lookup_fast", fn_name="trace_fast")
+    b.attach_kprobe(event_re=r'^lookup_fast$|^lookup_fast.constprop.*.\d$', fn_name="trace_fast")
 
 mode_s = {
     0: 'M',
@@ -140,13 +148,13 @@ start_ts = time.time()
 
 def print_event(cpu, data, size):
     event = b["events"].event(data)
-    print("%-11.6f %-6d %-16s %1s %s" % (
+    print("%-11.6f %-7d %-16s %1s %s" % (
             time.time() - start_ts, event.pid,
             event.comm.decode('utf-8', 'replace'), mode_s[event.type],
             event.filename.decode('utf-8', 'replace')))
 
 # header
-print("%-11s %-6s %-16s %1s %s" % ("TIME(s)", "PID", "COMM", "T", "FILE"))
+print("%-11s %-7s %-16s %1s %s" % ("TIME(s)", "PID", "COMM", "T", "FILE"))
 
 b["events"].open_perf_buffer(print_event, page_cnt=64)
 while 1:

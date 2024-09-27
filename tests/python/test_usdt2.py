@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # USAGE: test_usdt2.py
 #
@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
 }
 """
         # BPF program
-        self.bpf_text = """
+        self.bpf_text = b"""
 #include <uapi/linux/ptrace.h>
 
 BPF_PERF_OUTPUT(event1);
@@ -81,7 +81,7 @@ int do_trace3(struct pt_regs *ctx) {
         self.ftemp = NamedTemporaryFile(delete=False)
         self.ftemp.close()
         comp = Popen(["gcc", "-I", "%s/include" % os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe()))),
-                      "-x", "c", "-o", self.ftemp.name, "-"],
+                      "-x", "c++", "-o", self.ftemp.name, "-"],
                      stdin=PIPE)
         comp.stdin.write(app_text)
         comp.stdin.close()
@@ -102,7 +102,7 @@ int do_trace3(struct pt_regs *ctx) {
         u2 = USDT(pid=int(self.app2.pid))
         u2.enable_probe(probe="probe_point_2", fn_name="do_trace2")
         u2.enable_probe(probe="probe_point_3", fn_name="do_trace3")
-        self.bpf_text = self.bpf_text.replace("FILTER", "pid == %d" % self.app.pid)
+        self.bpf_text = self.bpf_text.replace(b"FILTER", b"pid == %d" % self.app.pid)
         b = BPF(text=self.bpf_text, usdt_contexts=[u, u2])
 
         # Event states for each event:
@@ -141,15 +141,15 @@ int do_trace3(struct pt_regs *ctx) {
             self.evt_st_6 = check_event_val(data, self.evt_st_6, 13)
 
         # loop with callback to print_event
-        b["event1"].open_perf_buffer(print_event1)
-        b["event2"].open_perf_buffer(print_event2)
-        b["event3"].open_perf_buffer(print_event3)
-        b["event4"].open_perf_buffer(print_event4)
-        b["event5"].open_perf_buffer(print_event5)
-        b["event6"].open_perf_buffer(print_event6)
+        b[b"event1"].open_perf_buffer(print_event1)
+        b[b"event2"].open_perf_buffer(print_event2)
+        b[b"event3"].open_perf_buffer(print_event3)
+        b[b"event4"].open_perf_buffer(print_event4)
+        b[b"event5"].open_perf_buffer(print_event5)
+        b[b"event6"].open_perf_buffer(print_event6)
 
         # three iterations to make sure we get some probes and have time to process them
-        for i in range(3):
+        for i in range(5):
             b.perf_buffer_poll()
 
         # note that event1 and event4 do not really fire, so their state should be 0

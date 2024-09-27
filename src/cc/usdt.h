@@ -46,7 +46,7 @@ static const std::string COMPILER_BARRIER =
 class Argument {
 private:
   optional<int> arg_size_;
-  optional<int> constant_;
+  optional<long long> constant_;
   optional<int> deref_offset_;
   optional<std::string> deref_ident_;
   optional<std::string> base_register_name_;
@@ -66,6 +66,7 @@ public:
 
   int arg_size() const { return arg_size_.value_or(sizeof(void *)); }
   std::string ctype() const;
+  const char *ctype_name() const;
 
   const optional<std::string> &deref_ident() const { return deref_ident_; }
   const optional<std::string> &base_register_name() const {
@@ -75,13 +76,15 @@ public:
     return index_register_name_;
   }
   const optional<int> scale() const { return scale_; }
-  const optional<int> constant() const { return constant_; }
+  const optional<long long> constant() const { return constant_; }
   const optional<int> deref_offset() const { return deref_offset_; }
 
   friend class ArgumentParser;
   friend class ArgumentParser_aarch64;
+  friend class ArgumentParser_loongarch64;
   friend class ArgumentParser_powerpc64;
   friend class ArgumentParser_s390x;
+  friend class ArgumentParser_riscv64;
   friend class ArgumentParser_x64;
 };
 
@@ -100,8 +103,17 @@ class ArgumentParser {
       *result = number;
     return endp - arg_;
   }
+  ssize_t parse_number(ssize_t pos, optional<long long> *result) {
+    char *endp;
+    long long number = (long long)strtoull(arg_ + pos, &endp, 0);
+    if (endp > arg_ + pos)
+      *result = number;
+    return endp - arg_;
+  }
   bool error_return(ssize_t error_start, ssize_t skip_start) {
     print_error(error_start);
+    if (isspace(arg_[skip_start]))
+        skip_start++;  // Make sure we skip at least one character
     skip_until_whitespace_from(skip_start);
     return false;
   }
@@ -115,14 +127,24 @@ class ArgumentParser {
 
 class ArgumentParser_aarch64 : public ArgumentParser {
  private:
-  bool parse_register(ssize_t pos, ssize_t &new_pos, optional<int> *reg_num);
+  bool parse_register(ssize_t pos, ssize_t &new_pos, std::string &reg_name);
   bool parse_size(ssize_t pos, ssize_t &new_pos, optional<int> *arg_size);
-  bool parse_mem(ssize_t pos, ssize_t &new_pos, optional<int> *reg_num,
-                 optional<int> *offset);
+  bool parse_mem(ssize_t pos, ssize_t &new_pos, Argument *dest);
 
  public:
   bool parse(Argument *dest);
   ArgumentParser_aarch64(const char *arg) : ArgumentParser(arg) {}
+};
+
+class ArgumentParser_loongarch64 : public ArgumentParser {
+ private:
+  bool parse_register(ssize_t pos, ssize_t &new_pos, std::string &reg_name);
+  bool parse_size(ssize_t pos, ssize_t &new_pos, optional<int> *arg_size);
+  bool parse_mem(ssize_t pos, ssize_t &new_pos, Argument *dest);
+
+ public:
+  bool parse(Argument *dest);
+  ArgumentParser_loongarch64(const char *arg) : ArgumentParser(arg) {}
 };
 
 class ArgumentParser_powerpc64 : public ArgumentParser {
@@ -137,26 +159,48 @@ public:
   ArgumentParser_s390x(const char *arg) : ArgumentParser(arg) {}
 };
 
+class ArgumentParser_riscv64 : public ArgumentParser {
+public:
+  bool parse(Argument *dest);
+  ArgumentParser_riscv64(const char *arg) : ArgumentParser(arg) {}
+};
+
 class ArgumentParser_x64 : public ArgumentParser {
 private:
   enum Register {
-    REG_A,
-    REG_B,
-    REG_C,
-    REG_D,
-    REG_SI,
-    REG_DI,
-    REG_BP,
-    REG_SP,
-    REG_8,
-    REG_9,
-    REG_10,
-    REG_11,
-    REG_12,
-    REG_13,
-    REG_14,
-    REG_15,
-    REG_RIP,
+    X64_REG_A,
+    X64_REG_B,
+    X64_REG_C,
+    X64_REG_D,
+    X64_REG_SI,
+    X64_REG_DI,
+    X64_REG_BP,
+    X64_REG_SP,
+    X64_REG_8,
+    X64_REG_9,
+    X64_REG_10,
+    X64_REG_11,
+    X64_REG_12,
+    X64_REG_13,
+    X64_REG_14,
+    X64_REG_15,
+    X64_REG_RIP,
+    X64_REG_XMM0,
+    X64_REG_XMM1,
+    X64_REG_XMM2,
+    X64_REG_XMM3,
+    X64_REG_XMM4,
+    X64_REG_XMM5,
+    X64_REG_XMM6,
+    X64_REG_XMM7,
+    X64_REG_XMM8,
+    X64_REG_XMM9,
+    X64_REG_XMM10,
+    X64_REG_XMM11,
+    X64_REG_XMM12,
+    X64_REG_XMM13,
+    X64_REG_XMM14,
+    X64_REG_XMM15,
   };
 
   struct RegInfo {
@@ -192,6 +236,7 @@ class Probe {
   std::string provider_;
   std::string name_;
   uint64_t semaphore_;
+  uint64_t semaphore_offset_;
 
   std::vector<Location> locations_;
 
@@ -202,7 +247,7 @@ class Probe {
   optional<uint64_t> attached_semaphore_;
   uint8_t mod_match_inode_only_;
 
-  std::string largest_arg_type(size_t arg_n);
+  const char *largest_arg_type(size_t arg_n);
 
   bool add_to_semaphore(int16_t val);
   bool resolve_global_address(uint64_t *global, const std::string &bin_path,
@@ -212,11 +257,13 @@ class Probe {
 
 public:
   Probe(const char *bin_path, const char *provider, const char *name,
-        uint64_t semaphore, const optional<int> &pid, uint8_t mod_match_inode_only = 1);
+        uint64_t semaphore, uint64_t semaphore_offset,
+        const optional<int> &pid, uint8_t mod_match_inode_only = 1);
 
   size_t num_locations() const { return locations_.size(); }
   size_t num_arguments() const { return locations_.front().arguments_.size(); }
   uint64_t semaphore()   const { return semaphore_; }
+  uint64_t semaphore_offset() const { return semaphore_offset_; }
 
   uint64_t address(size_t n = 0) const { return locations_[n].address_; }
   const char *location_bin_path(size_t n = 0) const { return locations_[n].bin_path_.c_str(); }
@@ -225,6 +272,10 @@ public:
   bool usdt_getarg(std::ostream &stream);
   bool usdt_getarg(std::ostream &stream, const std::string& probe_func);
   std::string get_arg_ctype(int arg_index) {
+    return largest_arg_type(arg_index);
+  }
+
+  const char *get_arg_ctype_name(int arg_index) {
     return largest_arg_type(arg_index);
   }
 
@@ -260,6 +311,8 @@ class Context {
 
   void add_probe(const char *binpath, const struct bcc_elf_usdt *probe);
   std::string resolve_bin_path(const std::string &bin_path);
+  Probe *get_checked(const std::string &provider_name,
+                     const std::string &probe_name);
 
 private:
   uint8_t mod_match_inode_only_;
@@ -283,6 +336,9 @@ public:
   bool enable_probe(const std::string &probe_name, const std::string &fn_name);
   bool enable_probe(const std::string &provider_name,
                     const std::string &probe_name, const std::string &fn_name);
+  bool addsem_probe(const std::string &provider_name,
+                    const std::string &probe_name, const std::string &fn_name,
+                    int16_t val);
 
   typedef void (*each_cb)(struct bcc_usdt *);
   void each(each_cb callback);

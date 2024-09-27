@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # bitehist.py   Block I/O size histogram.
 #               For Linux, uses BCC, eBPF. See .c file.
@@ -30,8 +30,8 @@ BPF_HISTOGRAM(dist, struct proc_key_t);
 TRACEPOINT_PROBE(block, block_rq_issue)
 {
     struct proc_key_t key = {.slot = bpf_log2l(args->bytes / 1024)};
-    bpf_probe_read(&key.name, sizeof(key.name), args->comm);
-    dist.increment(key);
+    bpf_probe_read_kernel(&key.name, sizeof(key.name), args->comm);
+    dist.atomic_increment(key);
     return 0;
 }
 """

@@ -1,24 +1,38 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # offcputime    Summarize off-CPU time by stack trace
 #               For Linux, uses BCC, eBPF.
 #
-# USAGE: offcputime [-h] [-p PID | -u | -k] [-U | -K] [-f] [duration]
+# USAGE: offcputime [-h] [-p PID | -t TID | -u | -k] [-U | -K] [-d] [-f] [-s]
+#                   [--stack-storage-size STACK_STORAGE_SIZE]
+#                   [-m MIN_BLOCK_TIME] [-M MAX_BLOCK_TIME] [--state STATE]
+#                   [duration]
 #
 # Copyright 2016 Netflix, Inc.
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
 # 13-Jan-2016	Brendan Gregg	Created this.
+# 27-Mar-2023	Rocky Xing      Added option to show symbol offsets.
+# 04-Apr-2023   Rocky Xing      Updated default stack storage size.
 
 from __future__ import print_function
 from bcc import BPF
 from sys import stderr
-from time import sleep, strftime
 import argparse
 import errno
 import signal
 
 # arg validation
+def positive_ints(val):
+    try:
+        ivals = [int(i) for i in val.split(',')]
+        for i in ivals:
+            if i < 0:
+               raise argparse.ArgumentTypeError("must be positive ingegers")
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be integers")
+    return ivals
+
 def positive_int(val):
     try:
         ival = int(val)
@@ -45,10 +59,11 @@ examples = """examples:
     ./offcputime             # trace off-CPU stack time until Ctrl-C
     ./offcputime 5           # trace for 5 seconds only
     ./offcputime -f 5        # 5 seconds, and output in folded format
+    ./offcputime -s 5        # 5 seconds, and show symbol offsets
     ./offcputime -m 1000     # trace only events that last more than 1000 usec
     ./offcputime -M 10000    # trace only events that last less than 10000 usec
-    ./offcputime -p 185      # only trace threads for PID 185
-    ./offcputime -t 188      # only trace thread 188
+    ./offcputime -p 185,175,165 # only trace threads for PID 185,175,165
+    ./offcputime -t 188,120,134 # only trace threads 188,120,134
     ./offcputime -u          # only trace user threads (no kernel)
     ./offcputime -k          # only trace kernel threads (no user)
     ./offcputime -U          # only show user space stacks (no kernel)
@@ -61,10 +76,10 @@ parser = argparse.ArgumentParser(
 thread_group = parser.add_mutually_exclusive_group()
 # Note: this script provides --pid and --tid flags but their arguments are
 # referred to internally using kernel nomenclature: TGID and PID.
-thread_group.add_argument("-p", "--pid", metavar="PID", dest="tgid",
-    help="trace this PID only", type=positive_int)
-thread_group.add_argument("-t", "--tid", metavar="TID", dest="pid",
-    help="trace this TID only", type=positive_int)
+thread_group.add_argument("-p", "--pid", metavar="PID", dest="tgids",
+    help="trace these PIDs only, comma separated list", type=positive_ints)
+thread_group.add_argument("-t", "--tid", metavar="TID", dest="pids",
+    help="trace these TIDs only, comma separated list", type=positive_ints)
 thread_group.add_argument("-u", "--user-threads-only", action="store_true",
     help="user threads only (no kernel threads)")
 thread_group.add_argument("-k", "--kernel-threads-only", action="store_true",
@@ -78,10 +93,12 @@ parser.add_argument("-d", "--delimited", action="store_true",
     help="insert delimiter between kernel/user stacks")
 parser.add_argument("-f", "--folded", action="store_true",
     help="output folded format")
-parser.add_argument("--stack-storage-size", default=1024,
+parser.add_argument("-s", "--offset", action="store_true",
+    help="show address offsets")
+parser.add_argument("--stack-storage-size", default=16384,
     type=positive_nonzero_int,
     help="the number of unique stack traces that can be stored and "
-         "displayed (default 1024)")
+         "displayed (default 16384)")
 parser.add_argument("duration", nargs="?", default=99999999,
     type=positive_nonzero_int,
     help="duration of trace, in seconds")
@@ -102,6 +119,10 @@ args = parser.parse_args()
 folded = args.folded
 duration = int(args.duration)
 debug = 0
+
+if args.folded and args.offset:
+    print("ERROR: can only use -f or -s. Exiting.")
+    exit()
 
 # signal handler
 def signal_ignore(signal, frame):
@@ -126,6 +147,14 @@ BPF_HASH(counts, struct key_t);
 BPF_HASH(start, u32);
 BPF_STACK_TRACE(stack_traces, STACK_STORAGE_SIZE);
 
+struct warn_event_t {
+    u32 pid;
+    u32 tgid;
+    u32 t_start;
+    u32 t_end;
+};
+BPF_PERF_OUTPUT(warn_events);
+
 int oncpu(struct pt_regs *ctx, struct task_struct *prev) {
     u32 pid = prev->pid;
     u32 tgid = prev->tgid;
@@ -146,8 +175,20 @@ int oncpu(struct pt_regs *ctx, struct task_struct *prev) {
     }
 
     // calculate current thread's delta time
-    u64 delta = bpf_ktime_get_ns() - *tsp;
+    u64 t_start = *tsp;
+    u64 t_end = bpf_ktime_get_ns();
     start.delete(&pid);
+    if (t_start > t_end) {
+        struct warn_event_t event = {
+            .pid = pid,
+            .tgid = tgid,
+            .t_start = t_start,
+            .t_end = t_end,
+        };
+        warn_events.perf_submit(ctx, &event, sizeof(event));
+        return 0;
+    }
+    u64 delta = t_end - t_start;
     delta = delta / 1000;
     if ((delta < MINBLOCK_US) || (delta > MAXBLOCK_US)) {
         return 0;
@@ -169,12 +210,12 @@ int oncpu(struct pt_regs *ctx, struct task_struct *prev) {
 
 # set thread filter
 thread_context = ""
-if args.tgid is not None:
-    thread_context = "PID %d" % args.tgid
-    thread_filter = 'tgid == %d' % args.tgid
-elif args.pid is not None:
-    thread_context = "TID %d" % args.pid
-    thread_filter = 'pid == %d' % args.pid
+if args.tgids is not None:
+    thread_context = "PIDs %s" % ','.join([str(tgid) for tgid in args.tgids])
+    thread_filter = ' || '.join(['tgid == %d' % tgid for tgid in args.tgids])
+elif args.pids is not None:
+    thread_context = "TIDs %s" % ','.join([str(pid) for pid in args.pids])
+    thread_filter = ' || '.join(['pid == %d' % pid for pid in args.pids])
 elif args.user_threads_only:
     thread_context = "user threads"
     thread_filter = '!(prev->flags & PF_KTHREAD)'
@@ -185,14 +226,18 @@ else:
     thread_context = "all threads"
     thread_filter = '1'
 if args.state == 0:
-    state_filter = 'prev->state == 0'
+    state_filter = 'prev->STATE_FIELD == 0'
 elif args.state:
     # these states are sometimes bitmask checked
-    state_filter = 'prev->state & %d' % args.state
+    state_filter = 'prev->STATE_FIELD & %d' % args.state
 else:
     state_filter = '1'
 bpf_text = bpf_text.replace('THREAD_FILTER', thread_filter)
 bpf_text = bpf_text.replace('STATE_FILTER', state_filter)
+if BPF.kernel_struct_has_field(b'task_struct', b'__state') == 1:
+    bpf_text = bpf_text.replace('STATE_FIELD', '__state')
+else:
+    bpf_text = bpf_text.replace('STATE_FIELD', 'state')
 
 # set stack storage size
 bpf_text = bpf_text.replace('STACK_STORAGE_SIZE', str(args.stack_storage_size))
@@ -222,20 +267,22 @@ need_delimiter = args.delimited and not (args.kernel_stacks_only or
 if args.kernel_threads_only and args.user_stacks_only:
     print("ERROR: Displaying user stacks for kernel threads " +
           "doesn't make sense.", file=stderr)
-    exit(1)
+    exit(2)
 
 if debug or args.ebpf:
     print(bpf_text)
     if args.ebpf:
-        exit()
+        print("ERROR: Exiting")
+        exit(3)
 
 # initialize BPF
 b = BPF(text=bpf_text)
-b.attach_kprobe(event="finish_task_switch", fn_name="oncpu")
+b.attach_kprobe(event_re=r'^finish_task_switch$|^finish_task_switch\.isra\.\d$',
+                fn_name="oncpu")
 matched = b.num_open_kprobes()
 if matched == 0:
     print("error: 0 functions traced. Exiting.", file=stderr)
-    exit(1)
+    exit(4)
 
 # header
 if not folded:
@@ -246,14 +293,33 @@ if not folded:
     else:
         print("... Hit Ctrl-C to end.")
 
+
+def print_warn_event(cpu, data, size):
+    event = b["warn_events"].event(data)
+    # See https://github.com/iovisor/bcc/pull/3227 for those wondering how can this happen.
+    print("WARN: Skipped an event with negative duration: pid:%d, tgid:%d, off-cpu:%d, on-cpu:%d"
+          % (event.pid, event.tgid, event.t_start, event.t_end),
+          file=stderr)
+
+b["warn_events"].open_perf_buffer(print_warn_event)
 try:
-    sleep(duration)
+    duration_ms = duration * 1000
+    start_time_ms = int(BPF.monotonic_time() / 1000000)
+    while True:
+        elapsed_ms = int(BPF.monotonic_time() / 1000000) - start_time_ms
+        if elapsed_ms >= duration_ms:
+            break
+        b.perf_buffer_poll(timeout=duration_ms - elapsed_ms)
 except KeyboardInterrupt:
     # as cleanup can take many seconds, trap Ctrl-C:
     signal.signal(signal.SIGINT, signal_ignore)
 
 if not folded:
     print()
+
+show_offset = False
+if args.offset:
+    show_offset = True
 
 missing_stacks = 0
 has_enomem = False
@@ -303,7 +369,7 @@ for k, v in sorted(counts.items(), key=lambda counts: counts[1].value):
                 print("    [Missed Kernel Stack]")
             else:
                 for addr in kernel_stack:
-                    print("    %s" % b.ksym(addr))
+                    print("    %s" % b.ksym(addr, show_offset=show_offset).decode('utf-8', 'replace'))
         if not args.kernel_stacks_only:
             if need_delimiter and k.user_stack_id >= 0 and k.kernel_stack_id >= 0:
                 print("    --")
@@ -311,7 +377,7 @@ for k, v in sorted(counts.items(), key=lambda counts: counts[1].value):
                 print("    [Missed User Stack]")
             else:
                 for addr in user_stack:
-                    print("    %s" % b.sym(addr, k.tgid))
+                    print("    %s" % b.sym(addr, k.tgid, show_offset=show_offset).decode('utf-8', 'replace'))
         print("    %-16s %s (%d)" % ("-", k.name.decode('utf-8', 'replace'), k.pid))
         print("        %d\n" % v.value)
 

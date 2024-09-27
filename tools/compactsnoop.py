@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # @lint-avoid-python-3-compatibility-imports
 #
 # compactsnoop  Trace compact zone and print details including issuing PID.
@@ -18,6 +18,7 @@ from bcc import BPF
 import argparse
 import platform
 from datetime import datetime, timedelta
+import sys
 
 # arguments
 examples = """examples:
@@ -108,7 +109,7 @@ BPF_STACK_TRACE(stack_traces, 2048);
 static inline int zone_to_nid_(struct zone *zone)
 {
     int node;
-    bpf_probe_read(&node, sizeof(node), &zone->node);
+    bpf_probe_read_kernel(&node, sizeof(node), &zone->node);
     return node;
 }
 #else
@@ -122,8 +123,8 @@ static inline int zone_to_nid_(struct zone *zone)
 static inline int zone_idx_(struct zone *zone)
 {
     struct pglist_data *zone_pgdat = NULL;
-    bpf_probe_read(&zone_pgdat, sizeof(zone_pgdat), &zone->zone_pgdat);
-    return zone - zone_pgdat->node_zones;
+    bpf_probe_read_kernel(&zone_pgdat, sizeof(zone_pgdat), &zone->zone_pgdat);
+    return ((u64)zone - (u64)zone_pgdat->node_zones)/sizeof(struct zone);
 }
 
 #ifdef EXTNEDED_FIELDS
@@ -132,13 +133,13 @@ static inline void get_all_wmark_pages(struct zone *zone, struct val_t *valp)
     u64 _watermark[NR_WMARK] = {};
     u64 watermark_boost = 0;
 
-    bpf_probe_read(&_watermark, sizeof(_watermark), &zone->_watermark);
-    bpf_probe_read(&watermark_boost, sizeof(watermark_boost),
+    bpf_probe_read_kernel(&_watermark, sizeof(_watermark), &zone->_watermark);
+    bpf_probe_read_kernel(&watermark_boost, sizeof(watermark_boost),
                     &zone->watermark_boost);
     valp->min = _watermark[WMARK_MIN] + watermark_boost;
     valp->low = _watermark[WMARK_LOW] + watermark_boost;
     valp->high = _watermark[WMARK_HIGH] + watermark_boost;
-    bpf_probe_read(&valp->free, sizeof(valp->free),
+    bpf_probe_read_kernel(&valp->free, sizeof(valp->free),
                     &zone->vm_stat[NR_FREE_PAGES]);
 }
 #endif
@@ -206,6 +207,7 @@ RAW_TRACEPOINT_PROBE(mm_compaction_suitable)
 {
     // TP_PROTO(struct zone *zone, int order, int ret)
     struct zone *zone = (struct zone *)ctx->args[0];
+    struct val_t val = { };
     int order = (int)ctx->args[1];
     int ret = (int)ctx->args[2];
     u64 id;
@@ -221,14 +223,13 @@ RAW_TRACEPOINT_PROBE(mm_compaction_suitable)
     if (valp == NULL) {
         // missed entry or order <= PAGE_ALLOC_COSTLY_ORDER, eg:
         // manual trigger echo 1 > /proc/sys/vm/compact_memory
-        struct val_t val = { .fragindex = -1000 };
+        val.fragindex = -1000;
         valp = &val;
-        start.update(&id, valp);
     }
     fill_compact_info(valp, zone, order);
     get_all_wmark_pages(zone, valp);
+    start.update(&id, valp);
 #else
-    struct val_t val = { };
     fill_compact_info(&val, zone, order);
     start.update(&id, &val);
 #endif
@@ -236,11 +237,9 @@ RAW_TRACEPOINT_PROBE(mm_compaction_suitable)
     return 0;
 }
 
-RAW_TRACEPOINT_PROBE(mm_compaction_begin)
+TRACEPOINT_PROBE(compaction, mm_compaction_begin)
 {
-    // TP_PROTO(unsigned long zone_start, unsigned long migrate_pfn,
-    //          unsigned long free_pfn, unsigned long zone_end, bool sync)
-    bool sync = (bool)ctx->args[4];
+    bool sync = args->sync;
 
     u64 id = bpf_get_current_pid_tgid();
     struct val_t *valp = start.lookup(&id);
@@ -254,21 +253,19 @@ RAW_TRACEPOINT_PROBE(mm_compaction_begin)
     return 0;
 }
 
-RAW_TRACEPOINT_PROBE(mm_compaction_end)
+TRACEPOINT_PROBE(compaction, mm_compaction_end)
 {
-    // TP_PROTO(unsigned long zone_start, unsigned long migrate_pfn,
-    //          unsigned long free_pfn, unsigned long zone_end, bool sync,
-    //          int status)
-    submit_event(ctx, ctx->args[5]);
+    submit_event(args, args->status);
     return 0;
 }
 """
 
-if platform.machine() != 'x86_64':
+if platform.machine() != 'x86_64' and platform.machine() != 'ppc64le':
     print("""
-          Currently only support x86_64 servers, if you want to use it on
-          other platforms, please refer include/linux/mmzone.h to modify
-          zone_idex_to_str to get the right zone type
+          Currently only support x86_64 and power servers, if you want
+          to use it on other platforms(including power embedded processors),
+          please refer include/linux/mmzone.h to modify zone_idex_to_str to
+          get the right zone type
     """)
     exit()
 
@@ -300,13 +297,22 @@ def zone_idx_to_str(idx):
     # from include/linux/mmzone.h
     # NOTICE: consider only x86_64 servers
     zone_type = {
-        0: "ZONE_DMA",
-        1: "ZONE_DMA32",
-        2: "ZONE_NORMAL",
+            'x86_64':
+                    {
+                        0: "ZONE_DMA",
+                        1: "ZONE_DMA32",
+                        2: "ZONE_NORMAL"
+                    },
+            # Zones in Power server only
+            'ppc64le':
+                    {
+                        0: "ZONE_NORMAL",
+                        1: "ZONE_MOVABLE"
+                    }
     }
 
-    if idx in zone_type:
-        return zone_type[idx]
+    if idx in zone_type[platform.machine()]:
+        return zone_type[platform.machine()][idx]
     else:
         return str(idx)
 
@@ -389,6 +395,8 @@ def print_event(cpu, data, size):
             sym = b.ksym(addr, show_offset=True)
             print("\t%s" % sym)
         print("")
+
+    sys.stdout.flush()
 
 # loop with callback to print_event
 b["events"].open_perf_buffer(print_event, page_cnt=64)

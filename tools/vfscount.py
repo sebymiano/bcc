@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # @lint-avoid-python-3-compatibility-imports
 #
 # vfscount  Count VFS calls ("vfs_*").
@@ -40,7 +40,7 @@ BPF_HASH(counts, struct key_t, u64, 256);
 int do_count(struct pt_regs *ctx) {
     struct key_t key = {};
     key.ip = PT_REGS_IP(ctx);
-    counts.increment(key);
+    counts.atomic_increment(key);
     return 0;
 }
 """)

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # @lint-avoid-python-3-compatibility-imports
 #
 # tcpdrop   Trace TCP kernel-dropped packets/segments.
@@ -7,7 +7,7 @@
 # This provides information such as packet details, socket state, and kernel
 # stack trace for packets/segments that were dropped via tcp_drop().
 #
-# USAGE: tcpdrop [-h]
+# USAGE: tcpdrop [-4 | -6] [-h]
 #
 # This uses dynamic tracing of kernel functions, and will need to be updated
 # to match kernel changes.
@@ -16,10 +16,12 @@
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
 # 30-May-2018   Brendan Gregg   Created this.
+# 15-Jun-2022   Rong Tao        Add tracepoint:skb:kfree_skb
 
 from __future__ import print_function
 from bcc import BPF
 import argparse
+import os
 from time import strftime
 from socket import inet_ntop, AF_INET, AF_INET6
 from struct import pack
@@ -29,13 +31,24 @@ from bcc import tcp
 # arguments
 examples = """examples:
     ./tcpdrop           # trace kernel TCP drops
+    ./tcpdrop -4        # trace IPv4 family only
+    ./tcpdrop -6        # trace IPv6 family only
 """
 parser = argparse.ArgumentParser(
     description="Trace TCP drops by the kernel",
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog=examples)
+group = parser.add_mutually_exclusive_group()
+group.add_argument("-4", "--ipv4", action="store_true",
+    help="trace IPv4 family only")
+group.add_argument("-6", "--ipv6", action="store_true",
+    help="trace IPv6 family only")
 parser.add_argument("--ebpf", action="store_true",
     help=argparse.SUPPRESS)
+parser.add_argument("--netns-id", type=int,
+    help="the netns id to filter by", default=0)
+parser.add_argument("--pid-netns",
+    help="the pid whose netns to filter by", type=int, default=0)
 args = parser.parse_args()
 debug = 0
 
@@ -93,11 +106,11 @@ static inline struct iphdr *skb_to_iphdr(const struct sk_buff *skb)
 #define tcp_flag_byte(th) (((u_int8_t *)th)[13])
 #endif
 
-int trace_tcp_drop(struct pt_regs *ctx, struct sock *sk, struct sk_buff *skb)
+static int __trace_tcp_drop(void *ctx, struct sock *sk, struct sk_buff *skb)
 {
     if (sk == NULL)
         return 0;
-    u32 pid = bpf_get_current_pid_tgid();
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     // pull in details from the packet headers and the sock struct
     u16 family = sk->__sk_common.skc_family;
@@ -110,6 +123,10 @@ int trace_tcp_drop(struct pt_regs *ctx, struct sock *sk, struct sk_buff *skb)
     dport = tcp->dest;
     sport = ntohs(sport);
     dport = ntohs(dport);
+
+    FILTER_FAMILY
+
+    FILTER_NETNS
 
     if (family == AF_INET) {
         struct ipv4_data_t data4 = {};
@@ -128,10 +145,12 @@ int trace_tcp_drop(struct pt_regs *ctx, struct sock *sk, struct sk_buff *skb)
         struct ipv6_data_t data6 = {};
         data6.pid = pid;
         data6.ip = 6;
-        bpf_probe_read(&data6.saddr, sizeof(data6.saddr),
-            sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
-        bpf_probe_read(&data6.daddr, sizeof(data6.daddr),
+        // The remote address (skc_v6_daddr) was the source
+        bpf_probe_read_kernel(&data6.saddr, sizeof(data6.saddr),
             sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
+        // The local address (skc_v6_rcv_saddr) was the destination
+        bpf_probe_read_kernel(&data6.daddr, sizeof(data6.daddr),
+            sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
         data6.dport = dport;
         data6.sport = sport;
         data6.state = state;
@@ -143,17 +162,61 @@ int trace_tcp_drop(struct pt_regs *ctx, struct sock *sk, struct sk_buff *skb)
 
     return 0;
 }
+
+int trace_tcp_drop(struct pt_regs *ctx, struct sock *sk, struct sk_buff *skb)
+{
+    return __trace_tcp_drop(ctx, sk, skb);
+}
+"""
+
+bpf_kfree_skb_text = """
+#include <linux/skbuff.h>
+
+TRACEPOINT_PROBE(skb, kfree_skb) {
+    struct sk_buff *skb = args->skbaddr;
+    struct sock *sk = skb->sk;
+    enum skb_drop_reason reason = args->reason;
+
+    // SKB_NOT_DROPPED_YET,
+    // SKB_DROP_REASON_NOT_SPECIFIED,
+    if (reason > SKB_DROP_REASON_NOT_SPECIFIED) {
+        return __trace_tcp_drop(args, sk, skb);
+    }
+
+    return 0;
+}
 """
 
 if debug or args.ebpf:
     print(bpf_text)
     if args.ebpf:
         exit()
+if args.ipv4:
+    bpf_text = bpf_text.replace('FILTER_FAMILY',
+        'if (family != AF_INET) { return 0; }')
+elif args.ipv6:
+    bpf_text = bpf_text.replace('FILTER_FAMILY',
+        'if (family != AF_INET6) { return 0; }')
+else:
+    bpf_text = bpf_text.replace('FILTER_FAMILY', '')
+
+if args.pid_netns != 0:
+    if args.netns_id != 0:
+        print("ERROR: --pid_netns and --netns-id not allowed together")
+        exit()
+    args.netns_id = os.stat('/proc/{}/ns/net'.format(args.pid_netns)).st_ino
+
+if args.netns_id != 0:
+    code = 'if (sk->__sk_common.skc_net.net->ns.inum != {}) {{ return 0; }}'.format(
+        args.netns_id)
+    bpf_text = bpf_text.replace('FILTER_NETNS', code)
+else:
+    bpf_text = bpf_text.replace('FILTER_NETNS', '')
 
 # process event
 def print_ipv4_event(cpu, data, size):
     event = b["ipv4_events"].event(data)
-    print("%-8s %-6d %-2d %-20s > %-20s %s (%s)" % (
+    print("%-8s %-7d %-2d %-20s > %-20s %s (%s)" % (
         strftime("%H:%M:%S"), event.pid, event.ip,
         "%s:%d" % (inet_ntop(AF_INET, pack('I', event.saddr)), event.sport),
         "%s:%s" % (inet_ntop(AF_INET, pack('I', event.daddr)), event.dport),
@@ -165,7 +228,7 @@ def print_ipv4_event(cpu, data, size):
 
 def print_ipv6_event(cpu, data, size):
     event = b["ipv6_events"].event(data)
-    print("%-8s %-6d %-2d %-20s > %-20s %s (%s)" % (
+    print("%-8s %-7d %-2d %-20s > %-20s %s (%s)" % (
         strftime("%H:%M:%S"), event.pid, event.ip,
         "%s:%d" % (inet_ntop(AF_INET6, event.saddr), event.sport),
         "%s:%d" % (inet_ntop(AF_INET6, event.daddr), event.dport),
@@ -175,18 +238,27 @@ def print_ipv6_event(cpu, data, size):
         print("\t%s" % sym)
     print("")
 
+if BPF.tracepoint_exists("skb", "kfree_skb"):
+    if BPF.kernel_struct_has_field("trace_event_raw_kfree_skb", "reason") == 1:
+        bpf_text += bpf_kfree_skb_text
+
 # initialize BPF
 b = BPF(text=bpf_text)
+
 if b.get_kprobe_functions(b"tcp_drop"):
     b.attach_kprobe(event="tcp_drop", fn_name="trace_tcp_drop")
+elif b.tracepoint_exists("skb", "kfree_skb"):
+    print("WARNING: tcp_drop() kernel function not found or traceable. "
+          "Use tracpoint:skb:kfree_skb instead.")
 else:
-    print("ERROR: tcp_drop() kernel function not found or traceable. "
-        "Older kernel versions not supported.")
+    print("ERROR: tcp_drop() kernel function and tracpoint:skb:kfree_skb"
+          " not found or traceable. "
+          "The kernel might be too old or the the function has been inlined.")
     exit()
 stack_traces = b.get_table("stack_traces")
 
 # header
-print("%-8s %-6s %-2s %-20s > %-20s %s (%s)" % ("TIME", "PID", "IP",
+print("%-8s %-7s %-2s %-20s > %-20s %s (%s)" % ("TIME", "PID", "IP",
     "SADDR:SPORT", "DADDR:DPORT", "STATE", "FLAGS"))
 
 # read events

@@ -38,7 +38,7 @@ int KBuildHelper::get_flags(const char *uname_machine, vector<string> *cflags) {
   //uname -m | sed -e s/i.86/x86/ -e s/x86_64/x86/ -e s/sun4u/sparc64/ -e s/arm.*/arm/
   //               -e s/sa110/arm/ -e s/s390x/s390/ -e s/parisc64/parisc/
   //               -e s/ppc.*/powerpc/ -e s/mips.*/mips/ -e s/sh[234].*/sh/
-  //               -e s/aarch64.*/arm64/
+  //               -e s/aarch64.*/arm64/ -e s/loongarch.*/loongarch/
 
   string arch;
   const char *archenv = getenv("ARCH");
@@ -66,6 +66,10 @@ int KBuildHelper::get_flags(const char *uname_machine, vector<string> *cflags) {
     arch = "powerpc";
   } else if (!arch.compare(0, 4, "mips")) {
     arch = "mips";
+  } else if (!arch.compare(0, 5, "riscv")) {
+    arch = "riscv";
+  } else if (!arch.compare(0, 9, "loongarch")) {
+    arch = "loongarch";
   } else if (!arch.compare(0, 2, "sh")) {
     arch = "sh";
   }
@@ -74,33 +78,56 @@ int KBuildHelper::get_flags(const char *uname_machine, vector<string> *cflags) {
   cflags->push_back("-isystem");
   cflags->push_back("/virtual/lib/clang/include");
 
-  // some module build directories split headers between source/ and build/
+  // The include order from kernel top Makefile:
+  //
+  // # Use USERINCLUDE when you must reference the UAPI directories only.
+  // USERINCLUDE    := \
+  //                 -I$(srctree)/arch/$(SRCARCH)/include/uapi \
+  //                 -I$(objtree)/arch/$(SRCARCH)/include/generated/uapi \
+  //                 -I$(srctree)/include/uapi \
+  //                 -I$(objtree)/include/generated/uapi \
+  //                 -include $(srctree)/include/linux/kconfig.h
+  //
+  // # Use LINUXINCLUDE when you must reference the include/ directory.
+  // # Needed to be compatible with the O= option
+  // LINUXINCLUDE    := \
+  //                 -I$(srctree)/arch/$(SRCARCH)/include \
+  //                 -I$(objtree)/arch/$(SRCARCH)/include/generated \
+  //                 $(if $(building_out_of_srctree),-I$(srctree)/include) \
+  //                 -I$(objtree)/include \
+  //                 $(USERINCLUDE)
+  //
+  // Some distros such as openSUSE/SUSE and Debian splits the headers between
+  // source/ and build/. In this case, just $(srctree) is source/ and
+  // $(objtree) is build/.
   if (has_source_dir_) {
-    cflags->push_back("-I" + kdir_ + "/build/arch/"+arch+"/include");
-    cflags->push_back("-I" + kdir_ + "/build/arch/"+arch+"/include/generated/uapi");
+    cflags->push_back("-Iarch/"+arch+"/include/");
     cflags->push_back("-I" + kdir_ + "/build/arch/"+arch+"/include/generated");
+    cflags->push_back("-Iinclude");
     cflags->push_back("-I" + kdir_ + "/build/include");
-    cflags->push_back("-I" + kdir_ + "/build/./arch/"+arch+"/include/uapi");
+    cflags->push_back("-Iarch/"+arch+"/include/uapi");
     cflags->push_back("-I" + kdir_ + "/build/arch/"+arch+"/include/generated/uapi");
-    cflags->push_back("-I" + kdir_ + "/build/include/uapi");
-    cflags->push_back("-I" + kdir_ + "/build/include/generated");
+    cflags->push_back("-Iinclude/uapi");
     cflags->push_back("-I" + kdir_ + "/build/include/generated/uapi");
+  } else {
+    cflags->push_back("-Iarch/"+arch+"/include/");
+    cflags->push_back("-Iarch/"+arch+"/include/generated");
+    cflags->push_back("-Iinclude");
+    cflags->push_back("-Iarch/"+arch+"/include/uapi");
+    cflags->push_back("-Iarch/"+arch+"/include/generated/uapi");
+    cflags->push_back("-Iinclude/uapi");
+    cflags->push_back("-Iinclude/generated/uapi");
   }
 
-  cflags->push_back("-I./arch/"+arch+"/include");
-  cflags->push_back("-Iarch/"+arch+"/include/generated/uapi");
-  cflags->push_back("-Iarch/"+arch+"/include/generated");
-  cflags->push_back("-Iinclude");
-  cflags->push_back("-I./arch/"+arch+"/include/uapi");
-  cflags->push_back("-Iarch/"+arch+"/include/generated/uapi");
-  cflags->push_back("-I./include/uapi");
-  cflags->push_back("-Iinclude/generated/uapi");
+  if (arch == "mips") {
+    cflags->push_back("-Iarch/mips/include/asm/mach-loongson64");
+    cflags->push_back("-Iarch/mips/include/asm/mach-generic");
+  }
+
   cflags->push_back("-include");
   cflags->push_back("./include/linux/kconfig.h");
   cflags->push_back("-D__KERNEL__");
-  cflags->push_back("-D__HAVE_BUILTIN_BSWAP16__");
-  cflags->push_back("-D__HAVE_BUILTIN_BSWAP32__");
-  cflags->push_back("-D__HAVE_BUILTIN_BSWAP64__");
+  cflags->push_back("-DKBUILD_MODNAME=\"bcc\"");
 
   // If ARCH env variable is set, pass this along.
   if (archenv)
@@ -113,15 +140,36 @@ int KBuildHelper::get_flags(const char *uname_machine, vector<string> *cflags) {
   return 0;
 }
 
-static inline int file_exists(const char *f)
+static inline bool file_exists(const char *f)
 {
   struct stat buffer;
   return (stat(f, &buffer) == 0);
 }
 
-static inline int proc_kheaders_exists(void)
+static inline bool file_exists_and_ownedby(const char *f, uid_t uid)
 {
-  return file_exists(PROC_KHEADERS_PATH);
+  struct stat buffer;
+  int ret = stat(f, &buffer) == 0;
+  if (ret) {
+    if (buffer.st_uid != uid) {
+      std::cout << "ERROR: header file ownership unexpected: " << std::string(f) << "\n";
+      return false;
+    }
+  }
+  return ret;
+}
+
+static inline bool proc_kheaders_exists(void)
+{
+  return file_exists_and_ownedby(PROC_KHEADERS_PATH, 0);
+}
+
+static inline const char *get_tmp_dir() {
+  const char *tmpdir = getenv("TMPDIR");
+  if (tmpdir) {
+    return tmpdir;
+  }
+  return "/tmp";
 }
 
 static inline int extract_kheaders(const std::string &dirpath,
@@ -142,7 +190,8 @@ static inline int extract_kheaders(const std::string &dirpath,
     }
   }
 
-  snprintf(dirpath_tmp, sizeof(dirpath_tmp), "/tmp/kheaders-%s-XXXXXX", uname_data.release);
+  snprintf(dirpath_tmp, sizeof(dirpath_tmp), "%s/kheaders-%s-XXXXXX",
+           get_tmp_dir(), uname_data.release);
   if (mkdtemp(dirpath_tmp) == NULL) {
     ret = -1;
     goto cleanup;
@@ -184,11 +233,18 @@ int get_proc_kheaders(std::string &dirpath)
   if (uname(&uname_data))
     return -errno;
 
-  snprintf(dirpath_tmp, 256, "/tmp/kheaders-%s", uname_data.release);
+  snprintf(dirpath_tmp, 256, "%s/kheaders-%s", get_tmp_dir(),
+           uname_data.release);
   dirpath = std::string(dirpath_tmp);
 
-  if (file_exists(dirpath_tmp))
-    return 0;
+  if (file_exists(dirpath_tmp)) {
+    if (file_exists_and_ownedby(dirpath_tmp, 0))
+      return 0;
+    else
+      // The path exists, but is owned by a non-root user
+      // Something fishy is going on
+      return -EEXIST;
+  }
 
   // First time so extract it
   return extract_kheaders(dirpath, uname_data);

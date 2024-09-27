@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # @lint-avoid-python-3-compatibility-imports
 #
 # xfsslower  Trace slow XFS operations.
@@ -81,7 +81,7 @@ struct data_t {
     u64 size;
     u64 offset;
     u64 delta_us;
-    u64 pid;
+    u32 pid;
     char task[TASK_COMM_LEN];
     char file[DNAME_INLINE_LEN];
 };
@@ -186,8 +186,11 @@ static int trace_return(struct pt_regs *ctx, int type)
 
     // populate output struct
     u32 size = PT_REGS_RC(ctx);
-    struct data_t data = {.type = type, .size = size, .delta_us = delta_us,
-        .pid = pid};
+    struct data_t data = {};
+    data.type = type;
+    data.size = size;
+    data.delta_us = delta_us;
+    data.pid = pid;
     data.ts_us = ts / 1000;
     data.offset = valp->offset;
     bpf_get_current_comm(&data.task, sizeof(data.task));
@@ -196,7 +199,7 @@ static int trace_return(struct pt_regs *ctx, int type)
     struct qstr qs = valp->fp->f_path.dentry->d_name;
     if (qs.len == 0)
         return 0;
-    bpf_probe_read(&data.file, sizeof(data.file), (void *)qs.name);
+    bpf_probe_read_kernel(&data.file, sizeof(data.file), (void *)qs.name);
 
     // output
     events.perf_submit(ctx, &data, sizeof(data));
@@ -253,12 +256,12 @@ def print_event(cpu, data, size):
 
     if (csv):
         print("%d,%s,%d,%s,%d,%d,%d,%s" % (
-            event.ts_us, event.task, event.pid, type, event.size,
-            event.offset, event.delta_us, event.file))
+            event.ts_us, event.task.decode('utf-8'), event.pid, type, event.size,
+            event.offset, event.delta_us, event.file.decode('utf-8')))
         return
     print("%-8s %-14.14s %-6s %1s %-7s %-8d %7.2f %s" % (strftime("%H:%M:%S"),
-        event.task, event.pid, type, event.size, event.offset / 1024,
-        float(event.delta_us) / 1000, event.file))
+        event.task.decode('utf-8'), event.pid, type, event.size, event.offset / 1024,
+        float(event.delta_us) / 1000, event.file.decode('utf-8')))
 
 # initialize BPF
 b = BPF(text=bpf_text)

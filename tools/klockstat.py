@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # klockstat traces lock events and display locks statistics.
 #
@@ -20,7 +20,7 @@ examples = """
     klockstat -d 5                      # trace for 5 seconds only
     klockstat -i 5                      # display stats every 5 seconds
     klockstat -p 123                    # trace locks for PID 123
-    klockstat -t 321                    # trace locks for PID 321
+    klockstat -t 321                    # trace locks for TID 321
     klockstat -c pipe_                  # display stats only for lock callers with 'pipe_' substring
     klockstat -S acq_count              # sort lock acquired results on acquired count
     klockstat -S hld_total              # sort lock held results on total held time
@@ -61,7 +61,7 @@ time_group.add_argument("-d", "--duration", type=int,
     help="total duration of trace in seconds")
 time_group.add_argument("-i", "--interval", type=int,
     help="print summary at this interval (seconds)")
-parser.add_argument("-n", "--locks", type=int, default=999999999,
+parser.add_argument("-n", "--locks", type=int, default=99999999,
     help="print given number of locks")
 parser.add_argument("-s", "--stacks", type=int, default=1,
     help="print given number of stack entries")
@@ -124,7 +124,7 @@ static bool allow_pid(u64 id)
     return 1;
 }
 
-int mutex_lock_enter(struct pt_regs *ctx)
+static int do_mutex_lock_enter(void *ctx, int skip)
 {
     if (!is_enabled())
         return 0;
@@ -149,7 +149,7 @@ int mutex_lock_enter(struct pt_regs *ctx)
             return 0;
     }
 
-    int stackid = stack_traces.get_stackid(ctx, 0);
+    int stackid = stack_traces.get_stackid(ctx, skip);
     struct depth_id did = {
       .id    = id,
       .depth = *depth,
@@ -237,7 +237,7 @@ static void update_hl_report_total(int *stackid, u64 delta)
     }
 }
 
-int mutex_lock_return(struct pt_regs *ctx)
+static int do_mutex_lock_return(void)
 {
     if (!is_enabled())
         return 0;
@@ -285,7 +285,7 @@ int mutex_lock_return(struct pt_regs *ctx)
     return 0;
 }
 
-int mutex_unlock_enter(struct pt_regs *ctx)
+static int do_mutex_unlock_enter(void)
 {
     if (!is_enabled())
         return 0;
@@ -330,8 +330,69 @@ int mutex_unlock_enter(struct pt_regs *ctx)
     time_held.delete(&did);
     return 0;
 }
+"""
+
+program_kprobe = """
+int mutex_unlock_enter(struct pt_regs *ctx)
+{
+    return do_mutex_unlock_enter();
+}
+
+int mutex_lock_return(struct pt_regs *ctx)
+{
+    return do_mutex_lock_return();
+}
+
+int mutex_lock_enter(struct pt_regs *ctx)
+{
+    return do_mutex_lock_enter(ctx, 0);
+}
+"""
+
+program_kfunc = """
+KFUNC_PROBE(mutex_unlock, void *lock)
+{
+    return do_mutex_unlock_enter();
+}
+
+KRETFUNC_PROBE(mutex_lock, void *lock, int ret)
+{
+    return do_mutex_lock_return();
+}
+
+KFUNC_PROBE(mutex_lock, void *lock)
+{
+    return do_mutex_lock_enter(ctx, 3);
+}
 
 """
+
+program_kfunc_nested = """
+KFUNC_PROBE(mutex_unlock, void *lock)
+{
+    return do_mutex_unlock_enter();
+}
+
+KRETFUNC_PROBE(mutex_lock_nested, void *lock, int ret)
+{
+    return do_mutex_lock_return();
+}
+
+KFUNC_PROBE(mutex_lock_nested, void *lock)
+{
+    return do_mutex_lock_enter(ctx, 3);
+}
+
+"""
+
+is_support_kfunc = BPF.support_kfunc()
+if is_support_kfunc:
+    if BPF.get_kprobe_functions(b"mutex_lock_nested"):
+        program += program_kfunc_nested
+    else:
+        program += program_kfunc
+else:
+    program += program_kprobe
 
 def sort_list(maxs, totals, counts):
     if (not args.sort):
@@ -352,7 +413,9 @@ def display(sort, maxs, totals, counts):
     global missing_stacks
     global has_enomem
 
-    for k, v in sorted(sort.items(), key=lambda sort: sort[1].value, reverse=True)[:args.locks]:
+    for k, v in sorted(sort.items_lookup_batch()
+                       if htab_batch_ops else sort.items(),
+                       key=lambda sort: sort[1].value, reverse=True)[:args.locks]:
         missing_stacks += int(stack_id_err(k.value))
         has_enomem      = has_enomem or (k.value == -errno.ENOMEM)
 
@@ -387,9 +450,19 @@ program = program.replace('STACK_STORAGE_SIZE', str(args.stack_storage_size))
 
 b = BPF(text=program)
 
-b.attach_kprobe(event="mutex_unlock", fn_name="mutex_unlock_enter")
-b.attach_kretprobe(event="mutex_lock", fn_name="mutex_lock_return")
-b.attach_kprobe(event="mutex_lock", fn_name="mutex_lock_enter")
+if not is_support_kfunc:
+    b.attach_kprobe(event="mutex_unlock", fn_name="mutex_unlock_enter")
+    # Depending on whether DEBUG_LOCK_ALLOC is set, the proper kprobe may be either mutex_lock or mutex_lock_nested
+    if BPF.get_kprobe_functions(b"mutex_lock_nested"):
+        b.attach_kretprobe(event="mutex_lock_nested", fn_name="mutex_lock_return")
+        b.attach_kprobe(event="mutex_lock_nested", fn_name="mutex_lock_enter")
+    else:
+        b.attach_kretprobe(event="mutex_lock", fn_name="mutex_lock_return")
+        b.attach_kprobe(event="mutex_lock", fn_name="mutex_lock_enter")
+
+# check whether hash table batch ops is supported
+htab_batch_ops = True if BPF.kernel_struct_has_field(b'bpf_map_ops',
+        b'map_lookup_and_delete_batch') == 1 else False
 
 enabled = b.get_table("enabled");
 
@@ -411,7 +484,7 @@ print("Tracing lock events... Hit Ctrl-C to end.")
 exiting = 0 if args.interval else 1
 exiting = 1 if args.duration else 0
 
-seconds = 999999999
+seconds = 99999999
 if args.interval:
     seconds = args.interval
 if args.duration:
@@ -441,12 +514,20 @@ while (1):
         break;
 
     stack_traces.clear()
-    aq_counts.clear()
-    aq_maxs.clear()
-    aq_totals.clear()
-    hl_counts.clear()
-    hl_maxs.clear()
-    hl_totals.clear()
+    if htab_batch_ops:
+        aq_counts.items_delete_batch()
+        aq_maxs.items_delete_batch()
+        aq_totals.items_delete_batch()
+        hl_counts.items_delete_batch()
+        hl_maxs.items_delete_batch()
+        hl_totals.items_delete_batch()
+    else:
+        aq_counts.clear()
+        aq_maxs.clear()
+        aq_totals.clear()
+        hl_counts.clear()
+        hl_maxs.clear()
+        hl_totals.clear()
 
 if missing_stacks > 0:
     enomem_str = " Consider increasing --stack-storage-size."

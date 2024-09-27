@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # deadlock  Detects potential deadlocks (lock order inversions)
 #           on a running process. For Linux, uses BCC, eBPF.
@@ -457,6 +457,23 @@ def main():
         help='Comma-separated list of unlock symbols to trace. Default is '
         'pthread_mutex_unlock. These symbols cannot be inlined in the binary.',
     )
+    parser.add_argument(
+        '-t', '--threads', type=int, default=65536,
+        help='Specifies the maximum number of threads to trace. default 65536. '
+             'Note. 40 bytes per thread.'
+    )
+    parser.add_argument(
+        '-e', '--edges', type=int, default=65536,
+        help='Specifies the maximum number of edge cases that can be recorded. '
+             'default 65536. Note. 88 bytes per edge case.'
+    )
+    parser.add_argument(
+        '-s', '--stacktraces', type=int, default=65536,
+        help='Specifies the maximum number of stack traces that can be recorded. '
+             'This number is rounded up to the next power of two.'
+             'default 65536. Note. 1 kbytes vmalloced per stack trace.'
+    )
+
     args = parser.parse_args()
     if not args.binary:
         try:
@@ -465,7 +482,12 @@ def main():
             print('%s. Is the process (pid=%d) running?' % (str(e), args.pid))
             sys.exit(1)
 
-    bpf = BPF(src_file=b'deadlock.c')
+    with open('deadlock.c') as f:
+        text = f.read()
+    text = text.replace('MAX_THREADS', str(args.threads));
+    text = text.replace('MAX_EDGES', str(args.edges));
+    text = text.replace('MAX_TRACES', str(args.stacktraces));
+    bpf = BPF(text=text)
 
     # Trace where threads are created
     bpf.attach_kretprobe(event=bpf.get_syscall_fnname('clone'), fn_name='trace_clone')
@@ -483,7 +505,7 @@ def main():
                 pid=args.pid,
             )
         except Exception as e:
-            print('%s. Failed to attach to symbol: %s' % (str(e), symbol))
+            print('%s. Failed to attach to symbol: %s\nIs --binary argument missing?' % (str(e), symbol))
             sys.exit(1)
     for symbol in args.lock_symbols:
         try:

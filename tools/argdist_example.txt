@@ -166,7 +166,7 @@ r:c:gets():char*:$retval:$retval!=0
 
 Similarly, we could get a histogram of the error codes returned by read():
 
-# ./argdist -i 10 -c 1 -H 'r:c:read()'
+# ./argdist -i 10 -c -H 'r:c:read()'
 [02:15:36]
 r:c:read()
      retval              : count     distribution
@@ -202,6 +202,24 @@ r::__vfs_read():u32:$PID:$latency > 100000
 ^C
 
 It looks like process 2780 performed 21 slow reads.
+
+You can print the name of the process. This is helpful for short lived processes
+and for easier identification of processes response. For example, we can identify
+the process using the epoll I/O multiplexing system call
+
+# ./argdist -C 't:syscalls:sys_exit_epoll_wait():char*:$COMM'
+[19:57:56]
+t:syscalls:sys_exit_epoll_wait():char*:$COMM
+	COUNT      EVENT
+	4          $COMM = b'node'
+[19:57:57]
+t:syscalls:sys_exit_epoll_wait():char*:$COMM
+	COUNT      EVENT
+	2          $COMM = b'open5gs-sgwud'
+	3          $COMM = b'open5gs-sgwcd'
+	3          $COMM = b'open5gs-nrfd'
+	3          $COMM = b'open5gs-udmd'
+	4          $COMM = b'open5gs-scpd'
 
 Occasionally, entry parameter values are also interesting. For example, you
 might be curious how long it takes malloc() to allocate memory -- nanoseconds
@@ -319,7 +337,7 @@ specific file, run this:
 Here's a final example that finds how many write() system calls are performed
 by each process on the system:
 
-# argdist -c -C 'p:c:write():int:$PID;write per process' -n 2
+# argdist -c -C 'p:c:write():int:$PID#write per process' -n 2
 [06:47:18]
 write by process
         COUNT      EVENT
@@ -345,6 +363,7 @@ Trace a function and display a summary of its parameter values.
 optional arguments:
   -h, --help            show this help message and exit
   -p PID, --pid PID     id of the process to trace (optional)
+  -t TID, --tid TID     id of the thread to trace (optional)
   -z STRING_SIZE, --string-size STRING_SIZE
                         maximum string size to read from char* arguments
   -i INTERVAL, --interval INTERVAL
@@ -412,6 +431,9 @@ argdist -p 1005 -H 'r:c:read()'
 argdist -C 'r::__vfs_read():u32:$PID:$latency > 100000'
         Print frequency of reads by process where the latency was >0.1ms
 
+argdist -C 'r::__vfs_read():u32:$COMM:$latency > 100000'
+        Print frequency of reads by process name where the latency was >0.1ms
+
 argdist -H 'r::__vfs_read(void *file, void *buf, size_t count):size_t:$entry(count):$latency > 1000000' 
         Print a histogram of read sizes that were longer than 1ms
 
@@ -449,3 +471,12 @@ argdist -I 'kernel/sched/sched.h' \
         in kernel/sched/sched.h which is in kernel source tree and not in kernel-devel
         package.  So this command needs to run at the kernel source tree root directory
         so that the added header file can be found by the compiler.
+
+argdist -C 'p::do_sys_open(int dfd, const char __user *filename, int flags,
+            umode_t mode):char*:filename:STRCMP("sample.txt", filename)'
+        Trace open of the file "sample.txt". It should be noted that 'filename'
+        passed to the do_sys_open is a char * user pointer. Hence parameter
+        'filename' should be tagged with __user for kprobes (const char __user
+        *filename).  This information distinguishes if the 'filename' should be
+        copied from userspace to the bpf stack or from kernel space to the bpf
+        stack.
